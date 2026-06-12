@@ -4,11 +4,21 @@
 #include <stdint.h>
 #include "rv_sparse.h"
 
+/*
+ * Wrapper layer:
+ * Uses rvsp_csr_matrix_t structs.
+ * Called by the public dispatcher.
+ */
 rvsp_status_t rvsp_spgemm_csr_scalar_f32(
     const rvsp_csr_matrix_t *A,
     const rvsp_csr_matrix_t *B,
     rvsp_csr_matrix_t *C);
 
+/*
+ * Raw kernel layer:
+ * Uses plain pointers and dimensions.
+ * This is the layer we optimize and port to RISC-V/RVV.
+ */
 rvsp_status_t rvsp_spgemm_csr_scalar_f32_raw(
     int32_t a_rows,
     int32_t a_cols,
