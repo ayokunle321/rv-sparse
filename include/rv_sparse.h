@@ -18,8 +18,9 @@ const char *rvsp_status_to_string(rvsp_status_t status);
 /*
  * CSR matrix lifecycle.
  *
- * The API does not take ownership of row_ptr, col_idx, or values.
- * The caller is responsible for managing the memory backing these arrays.
+ * rvsp_csr_create() does not take ownership of user-provided arrays.
+ * rvsp_spgemm_csr() may allocate output arrays for C.
+ * rvsp_csr_destroy() frees internal arrays only when owns_data is set.
  */
 rvsp_status_t rvsp_csr_create(
     rvsp_csr_matrix_t *A,
@@ -41,14 +42,12 @@ void rvsp_csr_destroy(rvsp_csr_matrix_t *A);
  *
  *     C = A * B
  *
- * Initial target:
- *     A: INT8
- *     B: INT8
- *     C: INT32 accumulation/output
+ * First implementation:
+ *     FP32 x FP32 -> FP32 scalar backend,
+ *     based on the existing AxBRowIP RowWiseInnerProduct prototype.
  *
- * Future targets:
- *     BF16 x BF16 -> FP32
- *     FP32 x FP32 -> FP32
+ * Planned next target:
+ *     INT8 x INT8 -> INT32
  */
 rvsp_status_t rvsp_spgemm_csr(
     const rvsp_csr_matrix_t *A,
