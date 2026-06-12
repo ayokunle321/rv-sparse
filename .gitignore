@@ -5,3 +5,21 @@ build/
 *.dylib
 *.exe
 *.out
+
+# Debug / profiling
+*.dSYM/
+*.gcda
+*.gcno
+*.profraw
+
+# Editor / OS files
+.vscode/
+.idea/
+.DS_Store
+
+# Temporary files
+*.tmp
+*.log
+
+# Personals notes (no public)
+/docs/personal_notes.md
