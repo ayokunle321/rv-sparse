@@ -5,11 +5,9 @@
 // in revision
 // todo things :  structure for add new kernels easily..
 
-rvsp_status_t rvsp_spgemm_csr(
-    const rvsp_csr_matrix_t *A,
-    const rvsp_csr_matrix_t *B,
-    rvsp_csr_matrix_t *C,
-    const rvsp_spgemm_options_t *options)
+rvsp_status_t rvsp_spgemm_csr(const rvsp_csr_matrix_t *A, const rvsp_csr_matrix_t *B,
+                              rvsp_csr_matrix_t *C,
+                              const rvsp_spgemm_options_t *options)
 {
     rvsp_backend_t backend = RVSP_BACKEND_SCALAR;
     rvsp_dtype_t input_dtype = RVSP_DTYPE_FP32;
@@ -34,5 +32,13 @@ rvsp_status_t rvsp_spgemm_csr(
         return rvsp_spgemm_csr_scalar_f32(A, B, C);
     }
 
+    if (backend == RVSP_BACKEND_SCALAR_UNROLL4 &&
+        input_dtype == RVSP_DTYPE_FP32 &&
+        output_dtype == RVSP_DTYPE_FP32)
+    {
+        return rvsp_spgemm_csr_scalar_unroll4_f32(A, B, C);
+    }
+
+    // default error
     return RVSP_ERROR_UNSUPPORTED_BACKEND;
 }

@@ -35,7 +35,7 @@ extern "C"
     typedef enum
     {
         RVSP_BACKEND_SCALAR,
-        RVSP_BACKEND_SCALAR_UNROOLL4,
+        RVSP_BACKEND_SCALAR_UNROLL4,
         RVSP_BACKEND_GCC_AUTOVEC,
         RVSP_BACKEND_RVV_INTRINSICS
     } rvsp_backend_t;
