@@ -36,12 +36,10 @@ SIDECAR_FIELDS = [
     "determinism_ok",
 ]
 
-# ROI stat keys → output column. Candidates tried in order. A missing
-# REQUIRED stat fails the run — a 48h sweep that silently produces an
-# empty CSV column is worse than an early abort. All names below were
-# verified against a smoke-run stats.txt on this gem5 build, so
-# everything load-bearing is required. Only per-op-class counters that
-# could legitimately restructure stay optional.
+# ROI stat keys -> output columns. Candidate names are tried in order.
+# Missing required stats fail the run rather than silently producing
+# incomplete results. Only counters that may legitimately differ across
+# gem5 versions remain optional.
 REQUIRED_STATS = {
     "roi_simInsts":     ["simInsts"],
     "roi_simOps":       ["simOps"],
@@ -181,9 +179,8 @@ class Rig:
         ] + g.get("extra_args", [])
 
     def job_hash(self, kernel_cfg: dict, build_cfg: dict, mode: str) -> str:
-        # Hash only what affects THIS run's validity. Whole-config hashing
-        # meant adding one matrix to the list invalidated every completed
-        # run in the suite.
+        # Hash only inputs that affect this run. This avoids invalidating
+        # completed runs when unrelated parts of the config change.
         return stable_hash({
             "gem5_config": self.gem5_config,
             "kernel": kernel_cfg,
@@ -212,7 +209,8 @@ class Rig:
         skip = re.compile(r"_(b|nodename|coord)\.mtx$")
         hits = [q for q in self.mdir.rglob(f"{name}.mtx") if not skip.search(str(q))]
         if len(hits) > 1:
-            # Ambiguity is a setup bug — pin it, don't pick rglob-order.
+            # Ambiguity is a configuration error. Fail instead of relying on
+            # filesystem traversal order.            
             sys.exit(f"ambiguous matrix '{name}': " +
                      ", ".join(str(h) for h in hits))
         return hits[0] if hits else None
@@ -344,9 +342,15 @@ class Rig:
         return m
 
     def verify(self, records) -> list[str]:
-        """Cross-run verification: structural agreement per matrix,
-        bitwise value agreement within f32, determinism flags.
-        determinism_ok: 1 pass, 0 fail, -1 n/a (cold — no reference run)."""
+        """Cross-run verification.
+
+        Checks structural agreement, f32 value hashes, and determinism flags.
+
+        determinism_ok:
+            1 = pass
+            0 = fail
+        -1 = n/a (cold mode)
+        """
         errors = []
         by_matrix, f32_by_matrix = {}, {}
         for r in records:

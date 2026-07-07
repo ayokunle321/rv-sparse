@@ -1,37 +1,36 @@
 /*
- * bench_spgemm.c — Benchmark harness for rv-sparse CSR SpGEMM kernels.
- * Cycle-accurate evaluation under gem5 RISC-V SE mode.
+ * Benchmark harness for rv-sparse CSR SpGEMM kernels.
+ * Measures kernel execution under gem5 RISC-V SE mode.
  *
  * Measurement:
  *   ROI (m5_reset_stats → m5_dump_stats) spans one complete kernel
- *   invocation: symbolic pass, output allocation, numeric pass.
+ *   invocation: symbolic pass, output allocation, and numeric pass.
  *
- *   Warm protocol (default): one untimed invocation grows the arena
- *   and warms caches, then a timed invocation. This is the headline
- *   "kernel cost" number — cold puts slab mmaps and first-touch
- *   faults inside the ROI, and gem5 SE fault handling is not
- *   representative of real hardware.
+ *   Warm protocol (default): one untimed invocation grows the arena and
+ *   warms caches, followed by a timed invocation. This is the headline
+ *   benchmark number.
  *
- *   Cold protocol (argv[3] = "cold"): single invocation, allocator
- *   syscalls inside ROI. Secondary, end-to-end number only.
+ *   Cold protocol (argv[3] = "cold"): a single timed invocation with
+ *   allocator syscalls inside the ROI. Useful as an end-to-end reference.
  *
  * Verification:
- *   FNV-1a hashes over output structure and values, plus a f64 value
- *   sum. Warm mode: warmup vs timed hashes compared (determinism
- *   check). Cold mode: no second invocation exists, so the check
- *   cannot run — sidecar reports -1 (n/a), never a vacuous pass.
+ *   FNV-1a hashes over the output structure and values, plus an f64 value
+ *   sum. In warm mode, the warmup and timed runs are compared as a
+ *   determinism check. Cold mode has no reference run, so determinism is
+ *   reported as -1 (n/a).
  *
  * Output:
  *   Sidecar CSV (argv[2]) — one line, no header:
  *     matrix,kernel,mode,M,A_nnz,madd_pairs,ops,bytes,AI,
  *     C_nnz,compression,struct_hash,val_hash,val_sum,determinism_ok
- *   determinism_ok: 1 pass, 0 FAIL, -1 not applicable (cold).
+ *
+ *   determinism_ok:
+ *     1 = pass
+ *     0 = FAIL
+ *    -1 = not applicable (cold mode)
  *
  * Build:
- *   riscv64-unknown-linux-gnu-gcc -O3 -march=rv64gc -static -Iinclude \
- *       -I$M5_INC -DKERNEL_I8 \
- *       bench/bench_spgemm.c src/kernels/spgemm/csr_scalar_i8.c \
- *       $M5_LIB/libm5.a -o bench_i8_gc
+ *   ...
  */
 
 #include <stdio.h>
@@ -49,12 +48,12 @@
 #endif
 
 /* ------------------------------------------------------------------ */
-/* Bump allocator (gem5 builds only)                                   */
+/* Bump allocator (gem5 builds only)                                  */
 /*                                                                     */
-/* gem5 SE mode's brk emulation is unreliable under malloc/free/       */
-/* realloc traffic. Sidestep it: malloc bumps a pointer inside mmap'd  */
-/* slabs, free is a no-op. Fine for a run-once benchmark. Native       */
-/* builds (-DNO_M5) keep glibc malloc so ASan/UBSan still interpose.   */
+/* Avoids heavy malloc/realloc traffic under gem5 SE mode by           */
+/* allocating from mmap'd slabs. free() is a no-op, which is fine      */
+/* for this run-once benchmark. Native (-DNO_M5) builds keep glibc     */
+/* malloc so sanitizers still work.                                   */
 /* ------------------------------------------------------------------ */
 #ifndef NO_M5
 #include <sys/mman.h>
@@ -174,14 +173,11 @@ void *reallocarray(void *p, size_t nm, size_t sz)
 #endif
 
 /* ------------------------------------------------------------------ */
-/* FNV-1a 64-bit, word-at-a-time.                                      */
+/* FNV-1a 64-bit, mixed a word at a time.                              */
 /*                                                                     */
-/* Byte-at-a-time FNV over ~100MB of output made post-ROI              */
-/* verification cost more simulated instructions than the ROI itself.  */
-/* Mixing 8 bytes per step is ~8x fewer sim insts. Not byte-FNV        */
-/* compatible, but hashes are only ever compared across runs of this   */
-/* same harness (warm-vs-timed, kernel-vs-kernel), so consistency is   */
-/* all that matters. Runs entirely outside the ROI either way.         */
+/* Word-at-a-time hashing reduces post-ROI verification cost           */
+/* substantially. Byte-for-byte FNV compatibility is unnecessary       */
+/* since hashes are only compared across runs of this harness.         */
 /* ------------------------------------------------------------------ */
 static uint64_t fnv1a(const void *data, size_t nbytes, uint64_t h)
 {
