@@ -4,6 +4,10 @@ bin/
 obj/
 lib/
 
+# Data
+matrices/
+results/
+
 # Compiled files
 *.o
 *.a

@@ -1,0 +1,86 @@
+{
+  "paths": {
+    "cc": "~/tools/riscv/bin/riscv64-unknown-linux-gnu-gcc",
+    "gem5": "~/gem5/build/RISCV/gem5.opt",
+    "se_config": "~/gem5/configs/deprecated/example/se.py",
+    "m5_inc": "~/gem5/include",
+    "m5_lib": "~/gem5/util/m5/build/riscv/out",
+    "harness": "bench/bench_spgemm.c",
+    "kernel_dir": "src/kernels/spgemm",
+    "include": "include",
+    "matrix_dir": "matrices",
+    "out_root": "results"
+  },
+  "gem5_config": {
+    "_comment": "Modeled dual-issue in-order RVV core (MinorCPU). Cache sizes X60-ish; latencies are se.py defaults pending board calibration — report results as relative kernel comparisons, not SpacemiT K1 numbers.",
+    "cpu_type": "MinorCPU",
+    "sys_clock": "1.6GHz",
+    "l1d_size": "32kB",
+    "l1i_size": "32kB",
+    "l2_size": "512kB",
+    "extra_args": [
+      "--mem-size=16GB"
+    ]
+  },
+  "builds": [
+    {
+      "tag": "gc",
+      "march": "rv64gc",
+      "extra_cflags": []
+    },
+    {
+      "tag": "gcv",
+      "march": "rv64gcv",
+      "extra_cflags": [
+        "-ftree-vectorize"
+      ]
+    }
+  ],
+  "kernels": [
+    {
+      "tag": "f32",
+      "define": "KERNEL_F32",
+      "src": "csr_scalar_f32.c"
+    },
+    {
+      "tag": "unroll4",
+      "define": "KERNEL_UNROLL4",
+      "src": "csr_scalar_unroll4_f32.c"
+    },
+    {
+      "tag": "i8",
+      "define": "KERNEL_I8",
+      "src": "csr_scalar_i8.c"
+    }
+  ],
+  "matrices": [
+    "wiki-Vote",
+    "email-Enron",
+    "ca-CondMat",
+    "p2p-Gnutella31",
+    "poisson3Da",
+    "scircuit",
+    "m133-b3",
+    "cage12",
+    "cop20k_A",
+    "2cubes_sphere",
+    "filter3D",
+    "offshore",
+    "mario002",
+    "patents_main",
+    "amazon0312",
+    "web-Google",
+    "roadNet-CA",
+    "cit-Patents",
+    "webbase-1M"
+  ],
+  "protocol": {
+    "mode": "warm",
+    "_comment": "warm = headline kernel-cost protocol: untimed invocation grows arena + warms caches, then timed invocation with the determinism check. Costs ~2x sim time per run. cold = single invocation with allocator syscalls + first-touch faults inside ROI — an end-to-end number, not kernel isolation; gem5 SE fault handling is not representative of real HW. Use mode_overrides to drop the largest matrices to cold if warm's 2x sim time is prohibitive, and report those separately.",
+    "mode_overrides": {}
+  },
+  "run": {
+    "parallel": 20,
+    "timeout_sec": 172800
+  }
+}
