@@ -161,9 +161,15 @@ class Rig:
         for d in (self.runs_dir, self.sidecar_dir, self.gem5_dir):
             d.mkdir(parents=True, exist_ok=True)
 
-        self.builds  = self.cfg["builds"]
-        self.kernels = [k for k in self.cfg["kernels"]
-                        if not args.kernels or k["tag"] in args.kernels]
+        self.builds = self.cfg["builds"]
+        self.kernels = self.cfg["kernels"]
+        if args.variant == "gc":
+            self.kernels = [k for k in self.kernels if "gcv" not in k["tag"]]
+        elif args.variant == "gcv":
+            self.kernels = [k for k in self.kernels if "gcv" in k["tag"]]
+        if args.kernels:
+            self.kernels = [k for k in self.kernels if k["tag"] in args.kernels]
+        
         self.matrices = args.matrices or self.cfg["matrices"]
         self.parallel = args.parallel or self.cfg["run"]["parallel"]
         self.timeout  = self.cfg["run"]["timeout_sec"]
@@ -412,6 +418,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="bench/experiments.json", type=Path)
     ap.add_argument("--kernels", nargs="*", help="subset of kernel tags")
+    ap.add_argument("--variant", choices=["gc", "gcv", "both"], default="both",
+        help="Run scalar kernels, vector kernels, or both.",
+    )
     ap.add_argument("--matrices", nargs="*", help="subset of matrices")
     ap.add_argument("--parallel", type=int)
     ap.add_argument("--mode", choices=["warm", "cold"],
