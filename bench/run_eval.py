@@ -9,6 +9,7 @@ Pipeline:
 Usage:
     ./run_eval.py                            # full suite
     ./run_eval.py --kernels i8               # subset
+    ./run_eval.py --variant gcv              # vector kernels only (gc for scalar)
     ./run_eval.py --matrices wiki-Vote       # single matrix
     ./run_eval.py --parallel 8 --mode cold   # overrides
     ./run_eval.py --reverify                 # re-run verification + CSV only
@@ -90,6 +91,29 @@ def stable_hash(obj) -> str:
         json.dumps(obj, sort_keys=True).encode()).hexdigest()[:12]
 
 
+def kernel_dtype(kernel_name: str) -> str:
+    # Group kernels by the numeric type of their output values. Kernels in the
+    # same group produce bit-identical output on the same matrix, so their
+    # value hashes are directly comparable. i8 kernels accumulate into exact
+    # int32, f32 kernels into float. Checked before "i8" so an "i8" substring
+    # does not get shadowed.
+    if "i8" in kernel_name:
+        return "i8"
+    if "f32" in kernel_name:
+        return "f32"
+    return "other"
+
+
+def kernel_sources(kcfg: dict) -> list[str]:
+    # A kernel may declare a single source ("src") or several ("srcs"). Kernels
+    # like the RVV path are split across a driver and a microkernel, so both
+    # files must be compiled and linked together. Guard the fallback so we do
+    # not touch kcfg["src"] when only "srcs" is present.
+    if "srcs" in kcfg:
+        return list(kcfg["srcs"])
+    return [kcfg["src"]]
+
+
 # --------------------------------------------------------------------------
 # stats.txt parsing
 # --------------------------------------------------------------------------
@@ -161,15 +185,30 @@ class Rig:
         for d in (self.runs_dir, self.sidecar_dir, self.gem5_dir):
             d.mkdir(parents=True, exist_ok=True)
 
-        self.builds = self.cfg["builds"]
         self.kernels = self.cfg["kernels"]
-        if args.variant == "gc":
-            self.kernels = [k for k in self.kernels if "gcv" not in k["tag"]]
-        elif args.variant == "gcv":
-            self.kernels = [k for k in self.kernels if "gcv" in k["tag"]]
         if args.kernels:
             self.kernels = [k for k in self.kernels if k["tag"] in args.kernels]
-        
+
+        # gc vs gcv is a build (march) axis here, not a kernel axis, so
+        # --variant filters the build list. --variant gc runs everything at
+        # rv64gc, --variant gcv at rv64gcv, both runs each kernel at both.
+        self.builds = self.cfg["builds"]
+        if args.variant == "gc":
+            self.builds = [b for b in self.builds if b["tag"] == "gc"]
+        elif args.variant == "gcv":
+            self.builds = [b for b in self.builds if b["tag"] == "gcv"]
+
+        # A kernel may restrict which builds it is valid for via an optional
+        # "builds" list of build tags. A hand-written RVV kernel, for example,
+        # only compiles at gcv, so it sets "builds": ["gcv"] and is skipped for
+        # any other march instead of failing to compile. Kernels with no such
+        # key build at every selected build, which is what the scalar kernels
+        # want (their whole point is gc vs gcv comparison).
+        self._valid_builds = {
+            k["tag"]: set(k.get("builds", [b["tag"] for b in self.builds]))
+            for k in self.kernels
+        }
+
         self.matrices = args.matrices or self.cfg["matrices"]
         self.parallel = args.parallel or self.cfg["run"]["parallel"]
         self.timeout  = self.cfg["run"]["timeout_sec"]
@@ -206,8 +245,9 @@ class Rig:
             if not path.exists():
                 problems.append(f"missing {name}: {path}")
         for k in self.kernels:
-            if not (self.kdir / k["src"]).exists():
-                problems.append(f"missing kernel source: {self.kdir / k['src']}")
+            for s in kernel_sources(k):
+                if not (self.kdir / s).exists():
+                    problems.append(f"missing kernel source: {self.kdir / s}")
         if problems:
             sys.exit("preflight failed:\n  " + "\n  ".join(problems))
 
@@ -227,8 +267,17 @@ class Rig:
         bins = {}
         for k in self.kernels:
             for b in self.builds:
+                # Skip build/march combinations a kernel has opted out of (for
+                # example an RVV kernel that only compiles at gcv).
+                if b["tag"] not in self._valid_builds[k["tag"]]:
+                    continue
                 out = Path(f"bench_{k['tag']}_{b['tag']}")
-                srcs = [str(self.harness), str(self.kdir / k["src"])]
+                # The harness plus every source file this kernel needs. Single
+                # source kernels give one file, split kernels (RVV driver plus
+                # its microkernel) give several so the linker can resolve calls
+                # between them.
+                srcs = [str(self.harness)] + [
+                    str(self.kdir / s) for s in kernel_sources(k)]
                 cmd = ([str(self.cc), "-O3", f"-march={b['march']}"]
                        + b.get("extra_cflags", [])
                        + ["-static", f"-I{self.inc}", f"-I{self.m5_inc}",
@@ -337,7 +386,11 @@ class Rig:
         def ratio(a, b):
             return (a / b) if (a is not None and b) else None
 
-        m["vec_ratio"]      = ratio(m["vec_insts"], m["committed_ops"])
+        # vec_ratio is the headline "did the vector unit actually run" number,
+        # so anchor it to a required stat (total committed instructions in the
+        # ROI) rather than the optional committed_ops counter, which can be
+        # absent on some gem5 builds and would silently blank the ratio.
+        m["vec_ratio"]      = ratio(m["vec_insts"], m["roi_simInsts"])
         m["l1d_miss_rate"]  = ratio(m["l1d_misses"], m["l1d_accesses"])
         m["l2_miss_rate"]   = ratio(m["l2_misses"], m["l2_accesses"])
         mpki = ratio(m["l2_misses"], m["roi_simInsts"])
@@ -350,11 +403,11 @@ class Rig:
         return m
 
     def verify(self, records) -> list[str]:
-        """Cross-run verification: structural agreement per matrix,
-        bitwise value agreement within f32, determinism flags.
+        """Cross-run verification: structural agreement per matrix, bitwise
+        value agreement within a value dtype, determinism flags.
         determinism_ok: 1 pass, 0 fail, -1 n/a (cold — no reference run)."""
         errors = []
-        by_matrix, f32_by_matrix = {}, {}
+        by_matrix, val_by_group = {}, {}
         for r in records:
             if r["status"] != "ok":
                 errors.append(f"{r['run_id']}: status={r['status']}"
@@ -363,16 +416,23 @@ class Rig:
             sc = r["sidecar"]
             if sc["determinism_ok"] == "0":
                 errors.append(f"{r['run_id']}: determinism check FAILED")
+
+            # Every kernel on a given matrix must agree on output structure,
+            # regardless of dtype.
             key = sc["matrix"]
             ref = by_matrix.setdefault(key, (sc["C_nnz"], sc["struct_hash"], r["run_id"]))
             if (sc["C_nnz"], sc["struct_hash"]) != ref[:2]:
                 errors.append(f"{key}: structural mismatch {r['run_id']} vs {ref[2]} "
                               f"(C_nnz {sc['C_nnz']} vs {ref[0]})")
-            if "f32" in sc["kernel"]:
-                fref = f32_by_matrix.setdefault(key, (sc["val_hash"], r["run_id"]))
-                if sc["val_hash"] != fref[0]:
-                    errors.append(f"{key}: f32 value hash mismatch "
-                                  f"{r['run_id']} vs {fref[1]}")
+
+            # Value hashes are only comparable between kernels of the same
+            # dtype. This is what actually checks the RVV i8 kernel against the
+            # scalar i8 reference, and keeps f32 kernels in their own group.
+            gkey = (sc["matrix"], kernel_dtype(sc["kernel"]))
+            vref = val_by_group.setdefault(gkey, (sc["val_hash"], r["run_id"]))
+            if sc["val_hash"] != vref[0]:
+                errors.append(f"{gkey}: value hash mismatch "
+                              f"{r['run_id']} vs {vref[1]}")
         return errors
 
     def load_all_records(self) -> list[dict]:
@@ -481,4 +541,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    

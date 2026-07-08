@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """
-scrape_results.py — turn results/runs/*.json into per-build CSVs
-and a matrix stats CSV.
+scrape_results.py — flatten results/runs/*.json into two CSVs.
+
 
 Output (in {out-dir}/):
-    gc.csv              performance for scalar (rv64gc) build
-    gcv.csv             performance for vectorized (rv64gcv) build
-    matrix_stats.csv    static matrix properties
+    results.csv         one row per ok run (matrix x kernel x build)
+    matrix_stats.csv    static matrix properties, one row per matrix
 
 Usage:
     ./scrape_results.py --runs-dir results/runs --matrix-dir matrices --out-dir eval
@@ -56,6 +55,19 @@ def matrix_row_stats(mtx_path: Path):
     return rows, cols, nnz, avg, mx, ratio
 
 
+def to_float(d: dict, key):
+    # Sidecar values arrive as strings and metrics may be missing or None.
+    # Return a float where possible, otherwise None, so the column stays numeric
+    # without blowing up on a stray value.
+    v = d.get(key)
+    if v is None or v == "":
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--runs-dir", type=Path, default=Path("results/runs"))
@@ -74,20 +86,20 @@ def main():
     if not records:
         raise SystemExit(f"no ok records found in {args.runs_dir}")
 
-    # ---- performance rows ----
+    # ---- flat performance table, one row per run ----
     perf_rows = []
     for r in records:
         sc, m = r["sidecar"], r["metrics"]
-        kernel = r["kernel"]
-        madds = float(sc["madd_pairs"])
+        madds = to_float(sc, "madd_pairs")
         cycles = m.get("roi_numCycles")
         sim_seconds = m.get("roi_simSeconds")
         sim_insts = m.get("roi_simInsts")
-        ops_per_sec = 2 * madds / sim_seconds if sim_seconds else None
+        ops_per_sec = (2 * madds / sim_seconds
+                       if (madds is not None and sim_seconds) else None)
         ipc = (sim_insts / cycles) if (sim_insts and cycles) else None
         perf_rows.append({
             "matrix": sc["matrix"],
-            "kernel": kernel,
+            "kernel": r["kernel"],
             "build": r["build"],
             "mode": r["mode"],
             "cycles": cycles,
@@ -96,31 +108,21 @@ def main():
             "cycles_per_madd": m.get("cycles_per_madd"),
             "ops_per_sec": ops_per_sec,
             "vec_ratio": m.get("vec_ratio"),
-            "AI_analytical": float(sc["AI_analytical"]) if "AI_analytical" in sc else None,
+            "AI_analytical": to_float(sc, "AI_analytical"),
             "AI_measured": m.get("AI_measured"),
             "dram_traffic_total": m.get("dram_traffic_total"),
             "l1d_miss_rate": m.get("l1d_miss_rate"),
             "l2_miss_rate": m.get("l2_miss_rate"),
             "mpki": m.get("mpki"),
             "C_nnz": int(sc["C_nnz"]),
-            "compression": float(sc["compression"]),
+            "compression": to_float(sc, "compression"),
         })
-    perf_df = pd.DataFrame(perf_rows).sort_values(["matrix", "kernel", "build"])
+    perf_df = (pd.DataFrame(perf_rows)
+               .sort_values(["matrix", "kernel", "build"]))
 
-    # ---- per-build CSVs ----
-    gc_cycles = (perf_df[perf_df["build"] == "gc"]
-                 [["matrix", "kernel", "cycles"]]
-                 .rename(columns={"cycles": "gc_cycles"}))
-
-    for build, group in perf_df.groupby("build"):
-        df = group.drop(columns=["build"])
-        if build == "gcv":
-            df = df.merge(gc_cycles, on=["matrix", "kernel"], how="left")
-            df["speedup_over_gc"] = df["gc_cycles"] / df["cycles"]
-            df = df.drop(columns=["gc_cycles"])
-        out = args.out_dir / f"{build}.csv"
-        df.to_csv(out, index=False)
-        print(f"wrote {out} ({len(df)} rows)")
+    results_path = args.out_dir / "results.csv"
+    perf_df.to_csv(results_path, index=False)
+    print(f"wrote {results_path} ({len(perf_df)} rows)")
 
     # ---- matrix_stats.csv ----
     matrices = sorted(perf_df["matrix"].unique())
@@ -134,9 +136,9 @@ def main():
             _, _, _, avg, mx, ratio = matrix_row_stats(mtx)
             row.update(avg_nnz_row=round(avg, 2), max_nnz_row=mx,
                        max_over_median_nnz_row=round(ratio, 2))
-        madds_by_kernel = {r["kernel"]: float(r["sidecar"]["madd_pairs"])
+        madds_by_kernel = {r["kernel"]: to_float(r["sidecar"], "madd_pairs")
                            for r in records if r["sidecar"]["matrix"] == name}
-        row["madd_pairs"] = list(madds_by_kernel.values())[0]
+        row["madd_pairs"] = next(iter(madds_by_kernel.values()), None)
         mat_rows.append(row)
 
     stats_path = args.out_dir / "matrix_stats.csv"

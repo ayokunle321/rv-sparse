@@ -43,14 +43,21 @@
       "src": "csr_scalar_f32.c"
     },
     {
-      "tag": "unroll4",
-      "define": "KERNEL_UNROLL4",
-      "src": "csr_scalar_unroll4_f32.c"
-    },
-    {
       "tag": "i8",
       "define": "KERNEL_I8",
       "src": "csr_scalar_i8.c"
+    },
+    {
+      "tag": "rvv_i8",
+      "define": "KERNEL_RVV_I8",
+      "srcs": ["csr_rvv_i8_indexed_marked.c", "accumulate_row_i8_rvv_indexed_fast.c"],
+      "builds": ["gcv"]
+    },
+    {
+      "tag": "rvv_f32",
+      "define": "KERNEL_RVV_F32",
+      "srcs": ["csr_rvv_f32_indexed_marked.c", "accumulate_row_f32_rvv_indexed_fast.c"],
+      "builds": ["gcv"]
     }
   ],
   "matrices": [

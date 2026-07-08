@@ -127,20 +127,6 @@ void *reallocarray(void *p, size_t nm, size_t sz)
   #define CALL_KERNEL(M,K,N,arp,aci,av,brp,bci,bv,crp,cci,cv,cnnz) \
       rvsp_spgemm_csr_scalar_f32_raw(M,K,N,arp,aci,av,brp,bci,bv,crp,cci,cv,cnnz)
 
-#elif defined(KERNEL_UNROLL4)
-  #define KERNEL_NAME     "csr_scalar_unroll4_f32"
-  typedef float   val_t;  typedef float   out_t;
-  #define VAL_IS_FLOAT    1
-  #define BYTES_PER_MADD  16.0
-  #define INTENSITY_LABEL "FLOP/byte"
-  rvsp_status_t rvsp_spgemm_csr_scalar_unroll4_f32_raw(
-      int32_t,int32_t,int32_t,
-      const int32_t*,const int32_t*,const float*,
-      const int32_t*,const int32_t*,const float*,
-      int32_t**,int32_t**,float**,int32_t*);
-  #define CALL_KERNEL(M,K,N,arp,aci,av,brp,bci,bv,crp,cci,cv,cnnz) \
-      rvsp_spgemm_csr_scalar_unroll4_f32_raw(M,K,N,arp,aci,av,brp,bci,bv,crp,cci,cv,cnnz)
-
 #elif defined(KERNEL_I8)
   #define KERNEL_NAME     "csr_scalar_i8"
   typedef int8_t  val_t;  typedef int32_t out_t;
@@ -169,8 +155,22 @@ void *reallocarray(void *p, size_t nm, size_t sz)
   #define CALL_KERNEL(M,K,N,arp,aci,av,brp,bci,bv,crp,cci,cv,cnnz) \
       rvsp_spgemm_csr_rvv_i8_indexed_marked_raw(M,K,N,arp,aci,av,brp,bci,bv,crp,cci,cv,cnnz)
 
+#elif defined(KERNEL_RVV_F32)
+  #define KERNEL_NAME     "csr_rvv_f32_indexed_marked"
+  typedef float   val_t;  typedef float   out_t;
+  #define VAL_IS_FLOAT    1
+  #define BYTES_PER_MADD  16.0
+  #define INTENSITY_LABEL "FLOP/byte"
+  rvsp_status_t rvsp_spgemm_csr_rvv_f32_indexed_marked_raw(
+      int32_t,int32_t,int32_t,
+      const int32_t*,const int32_t*,const float*,
+      const int32_t*,const int32_t*,const float*,
+      int32_t**,int32_t**,float**,int32_t*);
+  #define CALL_KERNEL(M,K,N,arp,aci,av,brp,bci,bv,crp,cci,cv,cnnz) \
+      rvsp_spgemm_csr_rvv_f32_indexed_marked_raw(M,K,N,arp,aci,av,brp,bci,bv,crp,cci,cv,cnnz)
+
 #else
-  #error "Define one of KERNEL_F32, KERNEL_UNROLL4, KERNEL_I8, KERNEL_RVV_I8"
+    #error "Define one of KERNEL_F32, KERNEL_UNROLL4, KERNEL_I8, KERNEL_RVV_I8, KERNEL_RVV_F32"
 #endif
 
 /* ------------------------------------------------------------------ */
