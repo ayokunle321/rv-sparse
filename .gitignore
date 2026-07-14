@@ -7,6 +7,10 @@ lib/
 # Data
 matrices/
 results/
+eval/
+
+# Virtual Env 
+path/
 
 # Compiled files
 *.o
