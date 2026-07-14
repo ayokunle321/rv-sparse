@@ -12,8 +12,9 @@
     "out_root": "results"
   },
   "gem5_config": {
-    "_comment": "Modeled dual-issue in-order RVV core (MinorCPU). Cache sizes X60-ish; latencies are se.py defaults pending board calibration — report results as relative kernel comparisons, not SpacemiT K1 numbers.",
+    "_comment": "In-order RVV core (MinorCPU, 2-wide). Cache sizes match SpacemiT X60 (32/32KB L1, 512KB L2); CPU/mem clock set to 1.6GHz per board. Pipeline issue-pairing and memory latencies not calibrated to silicon — report is relative kernel comparisons, not absolute K1 numbers.",
     "cpu_type": "MinorCPU",
+    "cpu_clock": "1.6GHz",
     "sys_clock": "1.6GHz",
     "l1d_size": "32kB",
     "l1i_size": "32kB",
