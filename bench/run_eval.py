@@ -219,11 +219,13 @@ class Rig:
 
         g = self.cfg["gem5_config"]
         self.gem5_config = g
-        self.gem5_args = [
-            f"--cpu-type={g['cpu_type']}", "--caches", "--l2cache",
+        self.gem5_args = (
+            [f"--cpu-type={g['cpu_type']}", "--caches", "--l2cache",
             f"--l1d_size={g['l1d_size']}", f"--l1i_size={g['l1i_size']}",
             f"--l2_size={g['l2_size']}", f"--sys-clock={g['sys_clock']}",
-        ] + g.get("extra_args", [])
+            f"--cpu-clock={g['cpu_clock']}"]
+            + g.get("extra_args", [])
+        )
 
     def job_hash(self, kernel_cfg: dict, build_cfg: dict, mode: str) -> str:
         # Hash only what affects THIS run's validity. Whole-config hashing
