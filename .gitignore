@@ -19,6 +19,7 @@ path/
 *.dylib
 *.exe
 *.out
+bench_*
 
 # Debug / profiling
 *.dSYM/
