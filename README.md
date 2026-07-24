@@ -1257,9 +1257,8 @@ The project contributes to the broader effort to make RISC-V a viable platform f
 
 ## Acknowledgments
 
-RV-Sparse was created by contributors at the Center for AI and BigData (CAID) at Namal University, Mianwali, and is developed as part of the 10xEngineers HW/SW Co-Design training initiative and RISC-V International's LFX Mentorship Program.
-
-The project uses matrix data from the SuiteSparse Matrix Collection and employs gem5 for cycle-accurate performance evaluation.
+- RV-Sparse was created by under the RISC-V International's LFX Mentorship Program.
+- The project uses matrix data from the SuiteSparse Matrix Collection and employs gem5 for theoretical cycle-accurate performance evaluation.
 
 ---
 
