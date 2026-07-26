@@ -16,13 +16,8 @@
 #define RVSP_UNLIKELY(x) (x)
 #endif
 
-/*
- * Try:
- *   -DRVSP_RVV_F32_MIN_B_NNZ=64
- *   -DRVSP_RVV_F32_MIN_B_NNZ=128
- */
 #ifndef RVSP_RVV_F32_MIN_B_NNZ
-#define RVSP_RVV_F32_MIN_B_NNZ 128
+#define RVSP_RVV_F32_MIN_B_NNZ 512
 #endif
 
 #ifndef RVSP_RVV_F32_CONTIG_MIN
@@ -53,9 +48,7 @@ static inline void rvsp_accumulate_row_f32_scalar_unroll4(float a_val, int32_t b
     }
 }
 
-static inline int32_t rvsp_consecutive_run_i32(
-    const int32_t *idx,
-    int32_t n)
+static inline int32_t rvsp_consecutive_run_i32(const int32_t *idx, int32_t n)
 {
     if (RVSP_UNLIKELY(n <= 0))
     {
@@ -75,10 +68,7 @@ static inline int32_t rvsp_consecutive_run_i32(
 
 rvsp_status_t rvsp_accumulate_row_f32_rvv_indexed_fast(float a_val, int32_t b_nnz, const int32_t *b_col_idx, const float *b_values, float *acc)
 {
-    if (RVSP_UNLIKELY(b_nnz < 0 ||
-                      b_col_idx == NULL ||
-                      b_values == NULL ||
-                      acc == NULL))
+    if (RVSP_UNLIKELY(b_nnz < 0 || b_col_idx == NULL || b_values == NULL || acc == NULL))
     {
         return RVSP_ERROR_INVALID_ARGUMENT;
     }
@@ -89,12 +79,7 @@ rvsp_status_t rvsp_accumulate_row_f32_rvv_indexed_fast(float a_val, int32_t b_nn
     }
     if (b_nnz < RVSP_RVV_F32_MIN_B_NNZ)
     {
-        rvsp_accumulate_row_f32_scalar_unroll4(
-            a_val,
-            b_nnz,
-            b_col_idx,
-            b_values,
-            acc);
+        rvsp_accumulate_row_f32_scalar_unroll4(a_val, b_nnz, b_col_idx, b_values, acc);
         return RVSP_SUCCESS;
     }
 
@@ -134,8 +119,6 @@ rvsp_status_t rvsp_accumulate_row_f32_rvv_indexed_fast(float a_val, int32_t b_nn
             continue;
         }
 
-        // Jump to inefiecient
-
         {
             const size_t vl =
                 __riscv_vsetvl_e32m2((size_t)remaining);
@@ -163,12 +146,7 @@ rvsp_status_t rvsp_accumulate_row_f32_rvv_indexed_fast(float a_val, int32_t b_nn
         }
     }
 #else
-    rvsp_accumulate_row_f32_scalar_unroll4(
-        a_val,
-        b_nnz,
-        b_col_idx,
-        b_values,
-        acc);
+    rvsp_accumulate_row_f32_scalar_unroll4(a_val, b_nnz, b_col_idx, b_values, acc);
 #endif
 
     return RVSP_SUCCESS;

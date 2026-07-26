@@ -13,7 +13,7 @@
 #endif
 
 #ifndef RVSP_RVV_F32_MIN_B_NNZ
-#define RVSP_RVV_F32_MIN_B_NNZ 128
+#define RVSP_RVV_F32_MIN_B_NNZ 512
 #endif
 
 #ifndef RVSP_SORT_INSERTION_LIMIT
@@ -77,11 +77,10 @@ static void sort_touched_columns_i32_rvv_f32(
         compare_i32_rvv_f32);
 }
 
-static void clear_f32_workspace(
-    float *acc,
-    uint8_t *mark,
-    const int32_t *touched,
-    int32_t touched_count)
+static void clear_f32_workspace(float *acc,
+                                uint8_t *mark,
+                                const int32_t *touched,
+                                int32_t touched_count)
 {
     for (int32_t i = 0; i < touched_count; i++)
     {
@@ -132,19 +131,8 @@ static rvsp_status_t mark_f32_row_columns(
     return RVSP_SUCCESS;
 }
 
-/*
- * Pure symbolic marking helper.
- *
- * This helper intentionally does not touch acc[col].
- * It is used only in the symbolic upper-bound pass.
- */
-static rvsp_status_t mark_f32_row_columns_symbolic(
-    int32_t b_nnz,
-    const int32_t *b_col_idx,
-    int32_t b_cols,
-    uint8_t *mark,
-    int32_t *touched,
-    int32_t *touched_count)
+static rvsp_status_t mark_f32_row_columns_symbolic(int32_t b_nnz, const int32_t *b_col_idx, int32_t b_cols,
+                                                   uint8_t *mark, int32_t *touched, int32_t *touched_count)
 {
     for (int32_t p = 0; p < b_nnz; p++)
     {
@@ -166,16 +154,15 @@ static rvsp_status_t mark_f32_row_columns_symbolic(
     return RVSP_SUCCESS;
 }
 
-static rvsp_status_t accumulate_f32_row_scalar_marked(
-    float a_val,
-    int32_t b_nnz,
-    const int32_t *b_col_idx,
-    const float *b_values,
-    int32_t b_cols,
-    float *acc,
-    uint8_t *mark,
-    int32_t *touched,
-    int32_t *touched_count)
+static rvsp_status_t accumulate_f32_row_scalar_marked(float a_val,
+                                                      int32_t b_nnz,
+                                                      const int32_t *b_col_idx,
+                                                      const float *b_values,
+                                                      int32_t b_cols,
+                                                      float *acc,
+                                                      uint8_t *mark,
+                                                      int32_t *touched,
+                                                      int32_t *touched_count)
 {
     int32_t p = 0;
 
@@ -255,12 +242,9 @@ static rvsp_status_t accumulate_f32_row_scalar_marked(
     return RVSP_SUCCESS;
 }
 
-static rvsp_status_t build_b_duplicate_flags_f32(
-    int32_t b_rows,
-    int32_t b_cols,
-    const int32_t *b_row_ptr,
-    const int32_t *b_col_idx,
-    uint8_t *b_has_duplicates)
+static rvsp_status_t build_b_duplicate_flags_f32(int32_t b_rows, int32_t b_cols, const int32_t *b_row_ptr,
+                                                 const int32_t *b_col_idx,
+                                                 uint8_t *b_has_duplicates)
 {
     uint8_t *seen = NULL;
     int32_t *seen_touched = NULL;
@@ -366,52 +350,29 @@ static rvsp_status_t accumulate_f32_row_rvv_or_scalar(
 {
     if (!should_use_rvv_f32(b_nnz, has_duplicates))
     {
-        return accumulate_f32_row_scalar_marked(
-            a_val,
-            b_nnz,
-            b_col_idx,
-            b_values,
-            b_cols,
-            acc,
-            mark,
-            touched,
-            touched_count);
+        return accumulate_f32_row_scalar_marked(a_val, b_nnz, b_col_idx, b_values,
+                                                b_cols,
+                                                acc,
+                                                mark,
+                                                touched,
+                                                touched_count);
     }
 
-    rvsp_status_t status = mark_f32_row_columns(
-        b_nnz,
-        b_col_idx,
-        b_cols,
-        acc,
-        mark,
-        touched,
-        touched_count);
+    rvsp_status_t status = mark_f32_row_columns(b_nnz, b_col_idx, b_cols, acc, mark, touched, touched_count);
 
     if (status != RVSP_SUCCESS)
     {
         return status;
     }
 
-    return rvsp_accumulate_row_f32_rvv_indexed_fast(
-        a_val,
-        b_nnz,
-        b_col_idx,
-        b_values,
-        acc);
+    return rvsp_accumulate_row_f32_rvv_indexed_fast(a_val, b_nnz, b_col_idx, b_values, acc);
 }
 
-static rvsp_status_t symbolic_count_pass_f32(
-    int32_t a_rows,
-    int32_t a_cols,
-    int32_t b_cols,
-    const int32_t *a_row_ptr,
-    const int32_t *a_col_idx,
-    const int32_t *b_row_ptr,
-    const int32_t *b_col_idx,
-    uint8_t *mark,
-    int32_t *touched,
-    int32_t *c_row_ptr,
-    int64_t *total_nnz_out)
+static rvsp_status_t symbolic_count_pass_f32(int32_t a_rows, int32_t a_cols, int32_t b_cols, const int32_t *a_row_ptr,
+                                             const int32_t *a_col_idx,
+                                             const int32_t *b_row_ptr, const int32_t *b_col_idx,
+                                             uint8_t *mark, int32_t *touched, int32_t *c_row_ptr,
+                                             int64_t *total_nnz_out)
 {
     int64_t total_nnz = 0;
 
@@ -446,13 +407,8 @@ static rvsp_status_t symbolic_count_pass_f32(
                 return RVSP_ERROR_INVALID_ARGUMENT;
             }
 
-            rvsp_status_t status = mark_f32_row_columns_symbolic(
-                b_end - b_start,
-                &b_col_idx[b_start],
-                b_cols,
-                mark,
-                touched,
-                &touched_count);
+            rvsp_status_t status = mark_f32_row_columns_symbolic(b_end - b_start, &b_col_idx[b_start],
+                                                                 b_cols, mark, touched, &touched_count);
 
             if (status != RVSP_SUCCESS)
             {
@@ -487,23 +443,11 @@ static rvsp_status_t symbolic_count_pass_f32(
     return RVSP_SUCCESS;
 }
 
-static rvsp_status_t numeric_emit_pass_f32(
-    int32_t a_rows,
-    int32_t a_cols,
-    int32_t b_cols,
-    const int32_t *a_row_ptr,
-    const int32_t *a_col_idx,
-    const float *a_values,
-    const int32_t *b_row_ptr,
-    const int32_t *b_col_idx,
-    const float *b_values,
-    const uint8_t *b_has_duplicates,
-    float *acc,
-    uint8_t *mark,
-    int32_t *touched,
-    int32_t *c_row_ptr,
-    int32_t *c_col_idx,
-    float *c_values)
+static rvsp_status_t numeric_emit_pass_f32(int32_t a_rows, int32_t a_cols, int32_t b_cols, const int32_t *a_row_ptr,
+                                           const int32_t *a_col_idx, const float *a_values, const int32_t *b_row_ptr,
+                                           const int32_t *b_col_idx, const float *b_values, const uint8_t *b_has_duplicates,
+                                           float *acc, uint8_t *mark, int32_t *touched,
+                                           int32_t *c_row_ptr, int32_t *c_col_idx, float *c_values)
 {
     (void)a_cols;
 
@@ -568,7 +512,12 @@ static rvsp_status_t numeric_emit_pass_f32(
     return RVSP_SUCCESS;
 }
 
-rvsp_status_t rvsp_spgemm_csr_rvv_f32_indexed_marked_raw(int32_t a_rows, int32_t a_cols, int32_t b_cols, const int32_t *a_row_ptr, const int32_t *a_col_idx, const float *a_values, const int32_t *b_row_ptr, const int32_t *b_col_idx, const float *b_values, int32_t **c_row_ptr_out, int32_t **c_col_idx_out, float **c_values_out, int32_t *c_nnz_out)
+rvsp_status_t rvsp_spgemm_csr_rvv_f32_indexed_marked_raw(int32_t a_rows, int32_t a_cols, int32_t b_cols,
+                                                         const int32_t *a_row_ptr, const int32_t *a_col_idx,
+                                                         const float *a_values, const int32_t *b_row_ptr,
+                                                         const int32_t *b_col_idx, const float *b_values,
+                                                         int32_t **c_row_ptr_out, int32_t **c_col_idx_out,
+                                                         float **c_values_out, int32_t *c_nnz_out)
 {
     rvsp_status_t status = RVSP_SUCCESS;
 
@@ -630,12 +579,7 @@ rvsp_status_t rvsp_spgemm_csr_rvv_f32_indexed_marked_raw(int32_t a_rows, int32_t
             goto fail;
         }
 
-        status = build_b_duplicate_flags_f32(
-            a_cols,
-            b_cols,
-            b_row_ptr,
-            b_col_idx,
-            b_has_duplicates);
+        status = build_b_duplicate_flags_f32(a_cols, b_cols, b_row_ptr, b_col_idx, b_has_duplicates);
 
         if (status != RVSP_SUCCESS)
         {
@@ -643,18 +587,9 @@ rvsp_status_t rvsp_spgemm_csr_rvv_f32_indexed_marked_raw(int32_t a_rows, int32_t
         }
     }
 
-    status = symbolic_count_pass_f32(
-        a_rows,
-        a_cols,
-        b_cols,
-        a_row_ptr,
-        a_col_idx,
-        b_row_ptr,
-        b_col_idx,
-        mark,
-        touched,
-        c_row_ptr,
-        &total_nnz_upper);
+    status = symbolic_count_pass_f32(a_rows, a_cols, b_cols, a_row_ptr, a_col_idx,
+                                     b_row_ptr, b_col_idx, mark, touched, c_row_ptr,
+                                     &total_nnz_upper);
 
     if (status != RVSP_SUCCESS)
     {
@@ -675,23 +610,9 @@ rvsp_status_t rvsp_spgemm_csr_rvv_f32_indexed_marked_raw(int32_t a_rows, int32_t
         }
     }
 
-    status = numeric_emit_pass_f32(
-        a_rows,
-        a_cols,
-        b_cols,
-        a_row_ptr,
-        a_col_idx,
-        a_values,
-        b_row_ptr,
-        b_col_idx,
-        b_values,
-        b_has_duplicates,
-        acc,
-        mark,
-        touched,
-        c_row_ptr,
-        c_col_idx,
-        c_values);
+    status = numeric_emit_pass_f32(a_rows, a_cols, b_cols, a_row_ptr, a_col_idx, a_values,
+                                   b_row_ptr, b_col_idx, b_values, b_has_duplicates, acc,
+                                   mark, touched, c_row_ptr, c_col_idx, c_values);
 
     if (status != RVSP_SUCCESS)
     {
