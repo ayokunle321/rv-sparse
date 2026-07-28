@@ -18,9 +18,11 @@
 #if defined(__GNUC__) || defined(__clang__)
 #define RVSP_LIKELY(x) __builtin_expect(!!(x), 1)
 #define RVSP_UNLIKELY(x) __builtin_expect(!!(x), 0)
+#define RVSP_RESTRICT __restrict__
 #else
 #define RVSP_LIKELY(x) (x)
 #define RVSP_UNLIKELY(x) (x)
+#define RVSP_RESTRICT
 #endif
 
 #ifndef RVSP_RVV_F32_MIN_B_NNZ
@@ -98,9 +100,11 @@ static inline void rvsp_accumulate_row_f32_scalar_unroll8(
     }
 }
 
-static inline int32_t rvsp_consecutive_run_i32(const int32_t *idx, int32_t n)
+static inline int32_t rvsp_consecutive_run_i32(
+    const int32_t *RVSP_RESTRICT idx,
+    int32_t n)
 {
-    if (RVSP_UNLIKELY(n <= 0))
+    if (RVSP_UNLIKELY(idx == NULL || n <= 0))
     {
         return 0;
     }
