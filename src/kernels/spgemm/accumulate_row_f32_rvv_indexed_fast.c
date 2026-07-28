@@ -120,23 +120,152 @@ static inline int32_t rvsp_consecutive_run_i32(
     return run;
 }
 
-rvsp_status_t rvsp_accumulate_row_f32_rvv_indexed_fast(float a_val, int32_t b_nnz, const int32_t *b_col_idx, const float *b_values, float *acc)
+static inline int32_t rvsp_find_next_contig_run_bounded_i32(
+    const int32_t *RVSP_RESTRICT idx,
+    int32_t n,
+    int32_t min_run,
+    int32_t scan_limit,
+    int32_t *RVSP_RESTRICT run_out)
 {
-    if (RVSP_UNLIKELY(b_nnz < 0 || b_col_idx == NULL || b_values == NULL || acc == NULL))
+    if (RVSP_UNLIKELY(run_out == NULL))
     {
-        return RVSP_ERROR_INVALID_ARGUMENT;
+        return 0;
     }
 
-    if (b_nnz == 0)
+    *run_out = 0;
+
+    if (RVSP_UNLIKELY(idx == NULL || n <= 0))
     {
-        return RVSP_SUCCESS;
-    }
-    if (b_nnz < RVSP_RVV_F32_MIN_B_NNZ)
-    {
-        rvsp_accumulate_row_f32_scalar_unroll4(a_val, b_nnz, b_col_idx, b_values, acc);
-        return RVSP_SUCCESS;
+        return 0;
     }
 
+    if (min_run <= 1)
+    {
+        *run_out = rvsp_consecutive_run_i32(idx, n);
+        return 0;
+    }
+
+    if (scan_limit <= 0)
+    {
+        scan_limit = n;
+    }
+
+    const int32_t limit = rvsp_min_i32(n, scan_limit);
+
+    if (limit < min_run)
+    {
+        return limit;
+    }
+
+    for (int32_t i = 0; i + min_run <= limit; i++)
+    {
+        if (idx[i + 1] != idx[i] + 1)
+        {
+            continue;
+        }
+
+        int32_t run = 2;
+
+        while (i + run < n && idx[i + run] == idx[i] + run)
+        {
+            run++;
+        }
+
+        if (run >= min_run)
+        {
+            *run_out = run;
+            return i;
+        }
+
+        i += run - 1;
+    }
+
+    return limit;
+}
+
+#if defined(RVSP_HAVE_RVV_INTRINSICS)
+static inline void rvsp_accumulate_row_f32_rvv_contig_chunk(
+    float a_val,
+    int32_t n,
+    int32_t base_col,
+    const float *RVSP_RESTRICT b_values,
+    float *RVSP_RESTRICT acc)
+{
+    int32_t q = 0;
+
+    while (q < n)
+    {
+        const size_t vl =
+            __riscv_vsetvl_e32m4((size_t)(n - q));
+
+        const vfloat32m4_t vb =
+            __riscv_vle32_v_f32m4(&b_values[q], vl);
+
+        vfloat32m4_t vacc =
+            __riscv_vle32_v_f32m4(&acc[base_col + q], vl);
+
+        vacc =
+            __riscv_vfmacc_vf_f32m4(vacc, a_val, vb, vl);
+
+        __riscv_vse32_v_f32m4(
+            &acc[base_col + q],
+            vacc,
+            vl);
+
+        q += (int32_t)vl;
+    }
+}
+
+static inline void rvsp_accumulate_row_f32_rvv_indexed_chunk(
+    float a_val,
+    int32_t n,
+    const int32_t *RVSP_RESTRICT b_col_idx,
+    const float *RVSP_RESTRICT b_values,
+    float *RVSP_RESTRICT acc)
+{
+    int32_t q = 0;
+
+    while (q < n)
+    {
+        const size_t vl =
+            __riscv_vsetvl_e32m2((size_t)(n - q));
+
+        const vfloat32m2_t vb =
+            __riscv_vle32_v_f32m2(&b_values[q], vl);
+
+        const vint32m2_t vidx_i32 =
+            __riscv_vle32_v_i32m2(&b_col_idx[q], vl);
+
+        const vint32m2_t voff_i32 =
+            __riscv_vsll_vx_i32m2(vidx_i32, 2, vl);
+
+        const vuint32m2_t voff_u32 =
+            __riscv_vreinterpret_v_i32m2_u32m2(voff_i32);
+
+        vfloat32m2_t vacc =
+            __riscv_vluxei32_v_f32m2(acc, voff_u32, vl);
+
+        vacc =
+            __riscv_vfmacc_vf_f32m2(vacc, a_val, vb, vl);
+
+        __riscv_vsuxei32_v_f32m2(
+            acc,
+            voff_u32,
+            vacc,
+            vl);
+
+        q += (int32_t)vl;
+    }
+}
+#endif
+
+static inline void rvsp_accumulate_row_f32_policy0_baseline(
+    float a_val,
+    int32_t b_nnz,
+    const int32_t *RVSP_RESTRICT b_col_idx,
+    const float *RVSP_RESTRICT b_values,
+    float *RVSP_RESTRICT acc)
+{
 #if defined(RVSP_HAVE_RVV_INTRINSICS)
     int32_t p = 0;
 
@@ -148,26 +277,12 @@ rvsp_status_t rvsp_accumulate_row_f32_rvv_indexed_fast(float a_val, int32_t b_nn
 
         if (run >= RVSP_RVV_F32_CONTIG_MIN)
         {
-            const int32_t base_col = b_col_idx[p];
-            int32_t q = 0;
-
-            while (q < run)
-            {
-                const size_t vl =
-                    __riscv_vsetvl_e32m4((size_t)(run - q));
-
-                const vfloat32m4_t vb =
-                    __riscv_vle32_v_f32m4(&b_values[p + q], vl);
-
-                vfloat32m4_t vacc =
-                    __riscv_vle32_v_f32m4(&acc[base_col + q], vl);
-
-                vacc = __riscv_vfmacc_vf_f32m4(vacc, a_val, vb, vl);
-
-                __riscv_vse32_v_f32m4(&acc[base_col + q], vacc, vl);
-
-                q += (int32_t)vl;
-            }
+            rvsp_accumulate_row_f32_rvv_contig_chunk(
+                a_val,
+                run,
+                b_col_idx[p],
+                &b_values[p],
+                acc);
 
             p += run;
             continue;
@@ -192,7 +307,8 @@ rvsp_status_t rvsp_accumulate_row_f32_rvv_indexed_fast(float a_val, int32_t b_nn
             vfloat32m2_t vacc =
                 __riscv_vluxei32_v_f32m2(acc, voff_u32, vl);
 
-            vacc = __riscv_vfmacc_vf_f32m2(vacc, a_val, vb, vl);
+            vacc =
+                __riscv_vfmacc_vf_f32m2(vacc, a_val, vb, vl);
 
             __riscv_vsuxei32_v_f32m2(acc, voff_u32, vacc, vl);
 
