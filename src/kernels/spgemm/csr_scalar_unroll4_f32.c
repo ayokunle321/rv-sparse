@@ -3,8 +3,16 @@
  *
  * SPDX-License-Identifier: GPL-3.0-only
  *
- * Scalar FP32 CSR SpGEMM kernel, manually unrolled by 4 in the inner
- * loop over each row of B.
+ * This file implements a scalar FP32 CSR SpGEMM kernel with manual
+ * unrolling by a factor of 4 in the inner loop over rows of matrix B.
+ *
+ * Operation:
+ *
+ *     C = A * B
+ *
+ * Format:
+ *
+ *     CSR FP32 x CSR FP32 -> CSR FP32
  */
 
 #include <stdlib.h>
