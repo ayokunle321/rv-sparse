@@ -19,6 +19,14 @@
 #include "rv_sparse.h"
 #include "csr_spgemm_kernels.h"
 
+static int compare_i32_unroll4(const void *a, const void *b)
+{
+    int32_t x = *(const int32_t *)a;
+    int32_t y = *(const int32_t *)b;
+
+    return (x > y) - (x < y);
+}
+
 rvsp_status_t rvsp_spgemm_csr_scalar_unroll4_f32_raw(
     int32_t a_rows,
     int32_t a_cols,
@@ -46,52 +54,108 @@ rvsp_status_t rvsp_spgemm_csr_scalar_unroll4_f32_raw(
         return RVSP_ERROR_INVALID_ARGUMENT;
     }
 
-    int32_t max_nnz = a_rows * b_cols;
-
+    // Workspace shared by the symbolic and numeric passes, sized b_cols.
+    float *acc = (float *)malloc((size_t)b_cols * sizeof(float));
+    int32_t *touched = (int32_t *)malloc((size_t)b_cols * sizeof(int32_t));
+    uint8_t *mark = (uint8_t *)calloc((size_t)b_cols, sizeof(uint8_t));
     int32_t *c_row_ptr = (int32_t *)calloc((size_t)a_rows + 1, sizeof(int32_t));
-    int32_t *c_col_idx = (int32_t *)malloc((size_t)max_nnz * sizeof(int32_t));
-    float *c_values = (float *)malloc((size_t)max_nnz * sizeof(float));
 
-    if (!c_row_ptr || !c_col_idx || !c_values)
+    if (!acc || !touched || !mark || !c_row_ptr)
     {
+        free(acc);
+        free(touched);
+        free(mark);
         free(c_row_ptr);
-        free(c_col_idx);
-        free(c_values);
         return RVSP_ERROR_ALLOCATION_FAILED;
     }
 
-    int32_t nnz_count = 0;
+    // Symbolic pass.
+    int64_t total_nnz = 0;
 
     for (int32_t row = 0; row < a_rows; row++)
     {
-        c_row_ptr[row] = nnz_count;
+        int32_t touched_count = 0;
 
-        float *acc = (float *)calloc((size_t)b_cols, sizeof(float));
-
-        if (!acc)
-        {
-            free(c_row_ptr);
-            free(c_col_idx);
-            free(c_values);
-            return RVSP_ERROR_ALLOCATION_FAILED;
-        }
-
-        int32_t a_start = a_row_ptr[row];
-        int32_t a_end = a_row_ptr[row + 1];
-
-        for (int32_t a_pos = a_start; a_pos < a_end; a_pos++)
+        for (int32_t a_pos = a_row_ptr[row]; a_pos < a_row_ptr[row + 1]; a_pos++)
         {
             int32_t k = a_col_idx[a_pos];
 
             if (k < 0 || k >= a_cols)
             {
                 free(acc);
+                free(touched);
+                free(mark);
                 free(c_row_ptr);
-                free(c_col_idx);
-                free(c_values);
                 return RVSP_ERROR_INVALID_CSR;
             }
 
+            for (int32_t b_pos = b_row_ptr[k]; b_pos < b_row_ptr[k + 1]; b_pos++)
+            {
+                int32_t col = b_col_idx[b_pos];
+
+                if (!mark[col])
+                {
+                    mark[col] = 1;
+                    touched[touched_count] = col;
+                    touched_count++;
+                }
+            }
+        }
+
+        c_row_ptr[row] = touched_count; // per-row count; prefix-summed below
+
+        total_nnz += touched_count;
+
+        for (int32_t i = 0; i < touched_count; i++)
+        {
+            mark[touched[i]] = 0;
+        }
+    }
+
+    if (total_nnz > INT32_MAX)
+    {
+        free(acc);
+        free(touched);
+        free(mark);
+        free(c_row_ptr);
+        return RVSP_ERROR_ALLOCATION_FAILED;
+    }
+
+    // Exclusive prefix sum turns the per-row counts into row pointers.
+    int32_t running = 0;
+
+    for (int32_t row = 0; row < a_rows; row++)
+    {
+        int32_t count = c_row_ptr[row];
+        c_row_ptr[row] = running;
+        running += count;
+    }
+
+    c_row_ptr[a_rows] = running;
+
+    size_t alloc_nnz = total_nnz > 0 ? (size_t)total_nnz : 1;
+    int32_t *c_col_idx = (int32_t *)malloc(alloc_nnz * sizeof(int32_t));
+    float *c_values = (float *)malloc(alloc_nnz * sizeof(float));
+
+    if (!c_col_idx || !c_values)
+    {
+        free(acc);
+        free(touched);
+        free(mark);
+        free(c_row_ptr);
+        free(c_col_idx);
+        free(c_values);
+        return RVSP_ERROR_ALLOCATION_FAILED;
+    }
+
+    // Numeric pass.
+    for (int32_t row = 0; row < a_rows; row++)
+    {
+        int32_t touched_count = 0;
+
+        for (int32_t a_pos = a_row_ptr[row]; a_pos < a_row_ptr[row + 1]; a_pos++)
+        {
+            int32_t k = a_col_idx[a_pos];
             float a_val = a_values[a_pos];
 
             int32_t b_start = b_row_ptr[k];
@@ -117,6 +181,34 @@ rvsp_status_t rvsp_spgemm_csr_scalar_unroll4_f32_raw(
                 float val2 = b_values[b_pos + 2];
                 float val3 = b_values[b_pos + 3];
 
+                if (!mark[col0])
+                {
+                    mark[col0] = 1;
+                    acc[col0] = 0.0f;
+                    touched[touched_count++] = col0;
+                }
+
+                if (!mark[col1])
+                {
+                    mark[col1] = 1;
+                    acc[col1] = 0.0f;
+                    touched[touched_count++] = col1;
+                }
+
+                if (!mark[col2])
+                {
+                    mark[col2] = 1;
+                    acc[col2] = 0.0f;
+                    touched[touched_count++] = col2;
+                }
+
+                if (!mark[col3])
+                {
+                    mark[col3] = 1;
+                    acc[col3] = 0.0f;
+                    touched[touched_count++] = col3;
+                }
+
                 acc[col0] += a_val * val0;
                 acc[col1] += a_val * val1;
                 acc[col2] += a_val * val2;
@@ -133,29 +225,49 @@ rvsp_status_t rvsp_spgemm_csr_scalar_unroll4_f32_raw(
                 int32_t col = b_col_idx[b_pos];
                 float val = b_values[b_pos];
 
+                if (!mark[col])
+                {
+                    mark[col] = 1;
+                    acc[col] = 0.0f;
+                    touched[touched_count++] = col;
+                }
+
                 acc[col] += a_val * val;
             }
         }
 
-        for (int32_t col = 0; col < b_cols; col++)
+        // Keep output rows in ascending column order (canonical CSR).
+        qsort(touched, (size_t)touched_count, sizeof(int32_t), compare_i32_unroll4);
+
+        int32_t dst = c_row_ptr[row];
+
+        for (int32_t i = 0; i < touched_count; i++)
         {
+            int32_t col = touched[i];
+
+            // Entries that numerically cancel to zero are not stored.
             if (acc[col] != 0.0f)
             {
-                c_col_idx[nnz_count] = col;
-                c_values[nnz_count] = acc[col];
-                nnz_count++;
+                c_col_idx[dst] = col;
+                c_values[dst] = acc[col];
+                dst++;
             }
+
+            mark[col] = 0;
         }
 
-        free(acc);
+        // Symbolic counts are an upper bound since cancellation can shrink rows.
+        c_row_ptr[row + 1] = dst;
     }
 
-    c_row_ptr[a_rows] = nnz_count;
+    free(acc);
+    free(touched);
+    free(mark);
 
     *c_row_ptr_out = c_row_ptr;
     *c_col_idx_out = c_col_idx;
     *c_values_out = c_values;
-    *c_nnz_out = nnz_count;
+    *c_nnz_out = c_row_ptr[a_rows];
 
     return RVSP_SUCCESS;
 }
