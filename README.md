@@ -18,14 +18,15 @@ where `A`, `B`, and `C` are sparse matrices in Compressed Sparse Row (CSR) forma
 
 Sparse linear algebra is a cornerstone of scientific computing, but sparse workloads present unique optimization challenges that differ fundamentally from dense linear algebra.
 
-### Why Sparse Matters
+### Importance of Sparse Matrices
 
 Sparse matrices emerge naturally from graph computations, finite element methods, machine learning embeddings, iterative solvers, and graph neural networks. Many real-world problems are sparse—often extremely sparse—and dense algorithms waste computation and memory on implicit zeros. Specialized sparse kernels can deliver orders of magnitude speedup.
 
-### Why SpGEMM Is Important
+### Significance of SpGEMM 
 
 Sparse matrix-matrix multiplication (SpGEMM) is a critical bottleneck in many applications:
 
+- Graph Neural Networks (GNNs)
 - Graph algorithms (shortest paths, centrality measures)
 - Iterative linear solvers and eigenvalue computations
 - Machine learning inference (sparse embeddings, graph neural networks)
@@ -472,46 +473,6 @@ if (has_duplicates) {
     // ... vectorized version ...
 }
 ```
-
----
-
-## Why Sparse RVV Optimization Is Difficult
-
-Despite RVV's theoretical advantages, accelerating sparse workloads with RVV is challenging:
-
-### Memory-Access Challenges
-
-1. **Irregular access patterns**: Sparse column indices are data-dependent and unpredictable, causing poor cache locality and frequent cache misses.
-2. **Gather/scatter overhead**: Indexed gather (`vluxei`) and scatter (`vsuxei`) are expensive operations that require address computation and irregular memory access, defeating the latency-hiding benefits of vector width.
-3. **Indirect addressing**: Each gather/scatter requires computing byte offsets from column indices, adding overhead that outweighs savings from vectorization on small rows.
-
-### Data-Dependent Behavior
-
-4. **Small row sizes**: Sparse rows are often very small (1-10 nonzeros). RVV overhead (vsetvl, address computation) dominates short inner loops.
-5. **Row imbalance**: Some rows are dense, others sparse. Load imbalance reduces vector utilization and wastes VLEN.
-6. **Duplicate column indices**: Fallback to scalar for rows with duplicates negates vectorization gains.
-
-### Computational Characteristics
-
-7. **Low arithmetic intensity**: Sparse SpGEMM often reads more data than it computes. Bandwidth-limited behavior means vectors provide no speedup.
-8. **Accumulator reuse**: The dense accumulator is repeatedly read and written. Vector gather/scatter multiply memory traffic.
-9. **Marker/touched-array overhead**: Tracking which columns were touched and sorting them are scalar-only operations that add overhead outside the hot loop.
-
-### Vector Unit Challenges
-
-10. **Setup cost**: Each `vsetvl` requires pipeline stalls. Multiple vsetvl calls across iterations accumulate overhead.
-11. **Limited utilization**: If rows are short, only a few vector lanes are active, wasting potential.
-12. **Gather/scatter latency**: Unlike unit-stride loads, gather/scatter operations serialize at the memory system, limiting bandwidth utilization.
-
-### Why Scalar Can Win
-
-For certain matrices—particularly those with small, balanced rows and low density—scalar implementations can be **faster** than RVV because:
-- Reduced loop overhead (no vsetvl)
-- Smaller code footprint (better I-cache utilization)
-- Simpler dependency chains
-- Indirect memory access happens anyway; vector indirection provides no benefit
-
----
 
 ## Matrix Generation and Input Data
 
@@ -1140,40 +1101,6 @@ Results are written to CSV with columns:
 - (and other performance counters)
 
 Lower `cycles_per_madd` means better performance.
-
----
-
-## Current Limitations
-
-RV-Sparse is an **experimental research platform** with known limitations:
-
-### Experimental Features
-
-1. **RVV acceleration is not faster**: Current RVV implementations show 10–22% slowdown compared to scalar baselines. The project documents this empirically; future work will explore optimizations.
-
-2. **Duplicate column fallback**: RVV implementations detect and scalar-fallback on rows with duplicate column indices. This limits vectorization for some matrices.
-
-3. **Limited RISC-V hardware support**: Tested on gem5 simulation. Real hardware testing pending.
-
-### Scope Limitations
-
-4. **CSR-only**: Only Compressed Sparse Row format is supported. COO, CSC, ELL, and other formats are not implemented.
-
-5. **Square matrices assumed**: Current examples and benchmarks use square matrices (`A` is M×M, `B` is M×M). Rectangular matrices should work but are not heavily tested.
-
-6. **Data types**: Only FP32 and INT8 kernels are implemented. FP64, BF16, and other types are enumerated but not implemented.
-
-7. **Limited backend coverage**: Only scalar and experimental RVV backends. No SIMD (SSE, AVX) or GPU backends.
-
-8. **No level-3 BLAS**: This is not a full BLAS library. Only SpGEMM is provided. No other sparse operations (SpMV, SpMM, sparse triangular solve, etc.).
-
-9. **No optimized transpose/format conversion**: Converting between CSR/CSC or transposing is not optimized.
-
-### Portability
-
-10. **Linux/Unix only**: Tested on Linux. Windows support untested.
-
-11. **Requires standard C11 features**: Tested with GCC and Clang. Other compilers may have issues.
 
 ---
 
