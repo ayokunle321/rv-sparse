@@ -97,6 +97,27 @@ endif
 EXCLUDED_SRCS := \
 	$(SRC_DIR)/matmul/AxBRowIP.c
 
+# Vector kernels require the RISC-V V extension.
+# Exclude them when the selected -march does not enable V.
+
+SPGEMM_DIR := $(SRC_DIR)/kernels/spgemm
+
+VECTOR_SRCS := \
+	$(SPGEMM_DIR)/accum_rvv_f32.c \
+	$(SPGEMM_DIR)/accum_contig_f32.c \
+	$(SPGEMM_DIR)/accum_adaptive_f32.c
+
+# Check only the RISC-V ISA string so unrelated flags cannot match "v".
+MARCH_HAS_V := $(shell printf '%s' '$(ARCH_FLAGS)' | \
+	grep -qE '(^|[[:space:]])-march=rv[0-9]+[a-z0-9_]*v' && echo yes)
+
+ifneq ($(MARCH_HAS_V),yes)
+EXCLUDED_SRCS += $(VECTOR_SRCS)
+$(info ---> vector kernels excluded: V extension not enabled)
+else
+$(info ---> vector kernels included)
+endif
+
 SRCS_ALL := $(shell find $(SRC_DIR) -name '*.c')
 SRCS := $(filter-out $(EXCLUDED_SRCS),$(SRCS_ALL))
 

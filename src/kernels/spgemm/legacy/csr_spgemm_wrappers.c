@@ -284,6 +284,8 @@ rvsp_status_t rvsp_spgemm_csr_rvv_i8_indexed_marked(const rvsp_csr_matrix_t *A,
     C->col_idx = c_col_idx;
     C->values = c_values;
     C->dtype = RVSP_DTYPE_INT32;
+    C->format = RVSP_FORMAT_CSR;
+    C->owns_data = 1;
 
     return RVSP_SUCCESS;
 }
@@ -340,6 +342,8 @@ rvsp_status_t rvsp_spgemm_csr_rvv_f32_indexed_marked(const rvsp_csr_matrix_t *A,
     C->col_idx = c_col_idx;
     C->values = c_values;
     C->dtype = RVSP_DTYPE_FP32;
+    C->format = RVSP_FORMAT_CSR;
+    C->owns_data = 1;
 
     return RVSP_SUCCESS;
 }
@@ -397,6 +401,8 @@ rvsp_status_t rvsp_spgemm_csr_scalar_f64(
     C->col_idx = c_col_idx;
     C->values = c_values;
     C->dtype = RVSP_DTYPE_FP64;
+    C->format = RVSP_FORMAT_CSR;
+    C->owns_data = 1;
 
     return RVSP_SUCCESS;
 }
@@ -453,6 +459,8 @@ rvsp_status_t rvsp_spgemm_csr_rvv_f64_indexed_marked(
     C->col_idx = c_col_idx;
     C->values = c_values;
     C->dtype = RVSP_DTYPE_FP64;
+    C->format = RVSP_FORMAT_CSR;
+    C->owns_data = 1;
 
     return RVSP_SUCCESS;
 }

@@ -12,6 +12,9 @@ lib/
 *.exe
 *.out
 
+# Data
+bench/results
+
 # Debug / profiling
 *.dSYM/
 *.gcda
@@ -35,3 +38,14 @@ compile_commands.json
 vgcore*  
 */*.mtx
 *.bak
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Per-machine bench config; copy from bench/env.sh.example
+bench/env.sh
+
+# Bench binaries, one per (build, cflags)
+bench/bench_*
+bench/csr_check

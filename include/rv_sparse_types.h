@@ -47,7 +47,6 @@ extern "C"
     {
         RVSP_BACKEND_SCALAR,
         RVSP_BACKEND_SCALAR_UNROLL4,
-        RVSP_BACKEND_GCC_AUTOVEC,
         RVSP_BACKEND_RVV_INTRINSICS
     } rvsp_backend_t;
 
@@ -72,8 +71,29 @@ extern "C"
         rvsp_backend_t backend;
         rvsp_dtype_t input_dtype;
         rvsp_dtype_t output_dtype;
-        int sort_output_indices;
     } rvsp_spgemm_options_t;
+
+    /*
+    * Opaque SpGEMM operation descriptor.
+    *
+    * Stores the selected algorithm and analyzed output structure between
+    * the structure and numeric phases.
+    */
+    typedef struct rvsp_spgemm_descr *rvsp_spgemm_descr_t;
+
+    /*
+    * SpGEMM accumulation strategy.
+    *
+    * RVSP_SPGEMM_ALGO_DEFAULT uses the scalar implementation.
+    * The RVV strategies require a build with the RISC-V Vector extension.
+    */
+    typedef enum
+    {
+        RVSP_SPGEMM_ALGO_DEFAULT = 0, /* scalar */
+        RVSP_SPGEMM_ALGO_RVV,         /* gather and scatter */
+        RVSP_SPGEMM_ALGO_CONTIG,      /* unit stride on contiguous runs */
+        RVSP_SPGEMM_ALGO_ADAPTIVE     /* selects between available strategies */
+    } rvsp_spgemm_algo_t;
 
 #ifdef __cplusplus
 }
