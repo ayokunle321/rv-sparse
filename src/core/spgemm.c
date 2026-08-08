@@ -11,8 +11,8 @@
 #include <stdlib.h>
 
 #include "rv_sparse.h"
-#include "../kernels/spgemm/csr_spgemm_kernels.h"
-#include "../kernels/spgemm/v2/rvsp_v2.h"
+#include "../kernels/spgemm/legacy/csr_spgemm_kernels.h"
+#include "../kernels/spgemm/rvsp_spgemm.h"
 
 /*
  * fp32 uses the current kernel family. fp64 and int8 remain on the existing

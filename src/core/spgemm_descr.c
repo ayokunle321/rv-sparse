@@ -13,8 +13,8 @@
 #include <string.h>
 
 #include "rv_sparse.h"
-#include "../kernels/spgemm/v2/rvsp_v2.h"
-#include "../kernels/spgemm/v2/rvsp_v2_common.h"
+#include "../kernels/spgemm/rvsp_spgemm.h"
+#include "../kernels/spgemm/rvsp_common.h"
 
 struct rvsp_spgemm_descr
 {

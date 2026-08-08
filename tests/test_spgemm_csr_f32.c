@@ -68,8 +68,7 @@ int main(void)
     rvsp_spgemm_options_t options = {
         .backend = RVSP_BACKEND_SCALAR,
         .input_dtype = RVSP_DTYPE_FP32,
-        .output_dtype = RVSP_DTYPE_FP32,
-        .sort_output_indices = 1};
+        .output_dtype = RVSP_DTYPE_FP32};
 
     status = rvsp_spgemm_csr(&A, &B, &C, &options);
     assert(status == RVSP_SUCCESS);

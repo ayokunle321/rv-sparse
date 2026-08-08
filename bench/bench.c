@@ -24,7 +24,7 @@
 #define _GNU_SOURCE              /* syscall() for perf_event_open */
 
 #include "rv_sparse.h"
-#include "rvsp_v2.h"
+#include "rvsp_spgemm.h"
 #include "genmat.h"
 #include "mtx_to_csr_formatter.h"
 #include "vec.h"
@@ -131,67 +131,11 @@ typedef rvsp_status_t (*spgemm_fn)(
     int64_t *op_counts_out);
 
 /* Kernel declarations used by the benchmark registry. */
-rvsp_status_t rvsp_spgemm_csr_scalar_f32(
-    const rvsp_csr_matrix_t *,
-    const rvsp_csr_matrix_t *,
-    rvsp_csr_matrix_t *);
-
-rvsp_status_t rvsp_spgemm_csr_scalar_f64(
-    const rvsp_csr_matrix_t *,
-    const rvsp_csr_matrix_t *,
-    rvsp_csr_matrix_t *);
-
-rvsp_status_t rvsp_spgemm_csr_scalar_i8(
-    const rvsp_csr_matrix_t *,
-    const rvsp_csr_matrix_t *,
-    rvsp_csr_matrix_t *);
-
-rvsp_status_t rvsp_spgemm_csr_scalar_unroll4_f32(
-    const rvsp_csr_matrix_t *,
-    const rvsp_csr_matrix_t *,
-    rvsp_csr_matrix_t *);
-
-rvsp_status_t rvsp_spgemm_csr_rvv_f32_indexed_marked(
-    const rvsp_csr_matrix_t *,
-    const rvsp_csr_matrix_t *,
-    rvsp_csr_matrix_t *);
-
-rvsp_status_t rvsp_spgemm_csr_rvv_f64_indexed_marked(
-    const rvsp_csr_matrix_t *,
-    const rvsp_csr_matrix_t *,
-    rvsp_csr_matrix_t *);
-
-rvsp_status_t rvsp_spgemm_csr_rvv_i8_indexed_marked(
-    const rvsp_csr_matrix_t *,
-    const rvsp_csr_matrix_t *,
-    rvsp_csr_matrix_t *);
-
-/* Adapt legacy three-argument kernels to the harness interface. */
-#define V1_ADAPT(adapter, kernel)                                      \
-    static rvsp_status_t adapter(                                    \
-        const rvsp_csr_matrix_t *A,                                  \
-        const rvsp_csr_matrix_t *B,                                  \
-        rvsp_csr_matrix_t *C,                                        \
-        void *ws, size_t wsb, int64_t *ops) {                         \
-        (void)ws;                                                     \
-        (void)wsb;                                                    \
-        (void)ops;                                                    \
-        return kernel(A, B, C);                                       \
-    }
-
-V1_ADAPT(v1_scalar_f32,  rvsp_spgemm_csr_scalar_f32)
-V1_ADAPT(v1_scalar_f64,  rvsp_spgemm_csr_scalar_f64)
-V1_ADAPT(v1_scalar_i8,   rvsp_spgemm_csr_scalar_i8)
-V1_ADAPT(v1_unroll4_f32, rvsp_spgemm_csr_scalar_unroll4_f32)
-V1_ADAPT(v1_rvv_f32,     rvsp_spgemm_csr_rvv_f32_indexed_marked)
-V1_ADAPT(v1_rvv_f64,     rvsp_spgemm_csr_rvv_f64_indexed_marked)
-V1_ADAPT(v1_rvv_i8,      rvsp_spgemm_csr_rvv_i8_indexed_marked)
-
 /*
  * Adapt the raw kernel API to rvsp_csr_matrix_t.
  * Workspace is supplied by the harness and reused across runs.
  */
-#define V2_WRAP(wrapper, kernel)                                      \
+#define KERNEL_WRAP(wrapper, kernel)                                      \
     static rvsp_status_t wrapper(                                    \
         const rvsp_csr_matrix_t *A,                                  \
         const rvsp_csr_matrix_t *B,                                  \
@@ -219,12 +163,12 @@ V1_ADAPT(v1_rvv_i8,      rvsp_spgemm_csr_rvv_i8_indexed_marked)
         return RVSP_SUCCESS;                                         \
     }
 
-V2_WRAP(v2_scalar_f32_w, rvsp_spgemm_scalar_f32)
+KERNEL_WRAP(scalar_f32_w, rvsp_spgemm_scalar_f32)
 
 #if defined(__riscv_vector)
-V2_WRAP(v2_rvv_f32_w,      rvsp_spgemm_rvv_f32)
-V2_WRAP(v2_contig_f32_w,   rvsp_spgemm_contig_f32)
-V2_WRAP(v2_adaptive_f32_w, rvsp_spgemm_adaptive_f32)
+KERNEL_WRAP(rvv_f32_w,      rvsp_spgemm_rvv_f32)
+KERNEL_WRAP(contig_f32_w,   rvsp_spgemm_contig_f32)
+KERNEL_WRAP(adaptive_f32_w, rvsp_spgemm_adaptive_f32)
 #endif
 
 typedef struct {
@@ -234,36 +178,20 @@ typedef struct {
     const char   *dtype_str;
     spgemm_fn     ref;
     const char   *ref_name;
-    int           needs_ws;
 } kernel_entry_t;
 
 /* Each current kernel is validated against the matching scalar reference. */
 static const kernel_entry_t KERNELS[] = {
-    { "scalar_f32",  v1_scalar_f32,  RVSP_DTYPE_FP32, "f32",
-      v1_scalar_f32, "scalar_f32", 0 },
-    { "scalar_f64",  v1_scalar_f64,  RVSP_DTYPE_FP64, "f64",
-      v1_scalar_f64, "scalar_f64", 0 },
-    { "scalar_i8",   v1_scalar_i8,   RVSP_DTYPE_INT8, "i8",
-      v1_scalar_i8,  "scalar_i8",  0 },
-    { "unroll4_f32", v1_unroll4_f32, RVSP_DTYPE_FP32, "f32",
-      v1_scalar_f32, "scalar_f32", 0 },
-    { "rvv_f32",     v1_rvv_f32,     RVSP_DTYPE_FP32, "f32",
-      v1_scalar_f32, "scalar_f32", 0 },
-    { "rvv_f64",     v1_rvv_f64,     RVSP_DTYPE_FP64, "f64",
-      v1_scalar_f64, "scalar_f64", 0 },
-    { "rvv_i8",      v1_rvv_i8,      RVSP_DTYPE_INT8, "i8",
-      v1_scalar_i8,  "scalar_i8",  0 },
-
-    { "v2_scalar_f32", v2_scalar_f32_w, RVSP_DTYPE_FP32, "f32",
-      v2_scalar_f32_w, "v2_scalar_f32", 1 },
+    { "scalar_f32", scalar_f32_w, RVSP_DTYPE_FP32, "f32",
+      scalar_f32_w, "scalar_f32" },
 
 #if defined(__riscv_vector)
-    { "v2_rvv_f32", v2_rvv_f32_w, RVSP_DTYPE_FP32, "f32",
-      v2_scalar_f32_w, "v2_scalar_f32", 1 },
-    { "v2_contig_f32", v2_contig_f32_w, RVSP_DTYPE_FP32, "f32",
-      v2_scalar_f32_w, "v2_scalar_f32", 1 },
-    { "v2_adaptive_f32", v2_adaptive_f32_w, RVSP_DTYPE_FP32, "f32",
-      v2_scalar_f32_w, "v2_scalar_f32", 1 },
+    { "rvv_f32", rvv_f32_w, RVSP_DTYPE_FP32, "f32",
+      scalar_f32_w, "scalar_f32" },
+    { "contig_f32", contig_f32_w, RVSP_DTYPE_FP32, "f32",
+      scalar_f32_w, "scalar_f32" },
+    { "adaptive_f32", adaptive_f32_w, RVSP_DTYPE_FP32, "f32",
+      scalar_f32_w, "scalar_f32" },
 #endif
 };
 
@@ -839,7 +767,7 @@ int main(int argc, char **argv) {
     void *ws = NULL;
     size_t ws_bytes = 0;
 
-    if (K->needs_ws) {
+    {
         rvsp_status_t bs =
             rvsp_spgemm_buffer_size(B.cols, &ws_bytes);
 
@@ -863,7 +791,7 @@ int main(int argc, char **argv) {
     /* Build the reference result outside the timed region. */
     int64_t *kernel_ops = NULL;
 
-    if (K->needs_ws) {
+    {
         kernel_ops =
             (int64_t *)calloc((size_t)A.rows, sizeof(int64_t));
 

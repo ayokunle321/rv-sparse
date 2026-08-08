@@ -6,7 +6,7 @@
  * Workspace size query and canonical CSR validation.
  */
 
-#include "rvsp_v2_common.h"
+#include "rvsp_common.h"
 
 rvsp_status_t
 rvsp_spgemm_buffer_size(

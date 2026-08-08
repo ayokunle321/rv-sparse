@@ -24,30 +24,30 @@
 #   rvv vs adaptive       dispatch vs always-gather
 
 arm	kernel	dtype	build	cflags
-baseline	v2_scalar_f32	f32	gc	-
-autovec	v2_scalar_f32	f32	gcv	-
-intrinsic	v2_rvv_f32	f32	gcv	-
-intrinsic	v2_contig_f32	f32	gcv	-
-adaptive	v2_adaptive_f32	f32	gcv	-
+baseline	scalar_f32	f32	gc	-
+autovec	scalar_f32	f32	gcv	-
+intrinsic	rvv_f32	f32	gcv	-
+intrinsic	contig_f32	f32	gcv	-
+adaptive	adaptive_f32	f32	gcv	-
 
 # Tunable sweeps. Uncomment individual rows as needed.
 #
 # Each distinct cflags string produces a separate build.
 #
-# RVSP_V2_SCALAR_UNROLL:     4, 8
-# RVSP_V2_CONTIG_MIN:        4, 8, 16, 32
-# RVSP_V2_CONTIG_SCAN_AHEAD: 64, 256, 1024
-# RVSP_V2_GATHER_MIN:        8, 16, 32, 64, 128
+# RVSP_SCALAR_UNROLL:     4, 8
+# RVSP_CONTIG_MIN:        4, 8, 16, 32
+# RVSP_CONTIG_SCAN_AHEAD: 64, 256, 1024
+# RVSP_GATHER_MIN:        8, 16, 32, 64, 128
 #
-# Keep RVSP_V2_SORT_INSERTION_LIMIT fixed across kernels.
+# Keep RVSP_SORT_INSERTION_LIMIT fixed across kernels.
 
-# baseline	v2_scalar_f32	f32	gc	-DRVSP_V2_SCALAR_UNROLL=8
-# autovec	v2_scalar_f32	f32	gcv	-DRVSP_V2_SCALAR_UNROLL=8
+# baseline	scalar_f32	f32	gc	-DRVSP_SCALAR_UNROLL=8
+# autovec	scalar_f32	f32	gcv	-DRVSP_SCALAR_UNROLL=8
 
-# intrinsic	v2_contig_f32	f32	gcv	-DRVSP_V2_CONTIG_MIN=4
-# intrinsic	v2_contig_f32	f32	gcv	-DRVSP_V2_CONTIG_MIN=16
-# intrinsic	v2_contig_f32	f32	gcv	-DRVSP_V2_CONTIG_MIN=32
+# intrinsic	contig_f32	f32	gcv	-DRVSP_CONTIG_MIN=4
+# intrinsic	contig_f32	f32	gcv	-DRVSP_CONTIG_MIN=16
+# intrinsic	contig_f32	f32	gcv	-DRVSP_CONTIG_MIN=32
 
-# adaptive	v2_adaptive_f32	f32	gcv	-DRVSP_V2_GATHER_MIN=8
-# adaptive	v2_adaptive_f32	f32	gcv	-DRVSP_V2_GATHER_MIN=32
-# adaptive	v2_adaptive_f32	f32	gcv	-DRVSP_V2_GATHER_MIN=64
+# adaptive	adaptive_f32	f32	gcv	-DRVSP_GATHER_MIN=8
+# adaptive	adaptive_f32	f32	gcv	-DRVSP_GATHER_MIN=32
+# adaptive	adaptive_f32	f32	gcv	-DRVSP_GATHER_MIN=64

@@ -98,14 +98,12 @@ int main(void)
     rvsp_spgemm_options_t scalar_options = {
         .backend = RVSP_BACKEND_SCALAR,
         .input_dtype = RVSP_DTYPE_FP32,
-        .output_dtype = RVSP_DTYPE_FP32,
-        .sort_output_indices = 1};
+        .output_dtype = RVSP_DTYPE_FP32};
 
     rvsp_spgemm_options_t unroll4_options = {
         .backend = RVSP_BACKEND_SCALAR_UNROLL4,
         .input_dtype = RVSP_DTYPE_FP32,
-        .output_dtype = RVSP_DTYPE_FP32,
-        .sort_output_indices = 1};
+        .output_dtype = RVSP_DTYPE_FP32};
 
     status = rvsp_spgemm_csr(&A, &B, &C_scalar, &scalar_options);
     assert(status == RVSP_SUCCESS);

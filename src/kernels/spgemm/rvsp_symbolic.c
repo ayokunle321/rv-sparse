@@ -9,7 +9,7 @@
  * values.
  */
 
-#include "rvsp_v2_common.h"
+#include "rvsp_common.h"
 
 /* Phase 1 determines the output row sizes and operation counts. */
 rvsp_status_t rvsp_symbolic_count(

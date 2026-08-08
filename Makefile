@@ -100,19 +100,19 @@ EXCLUDED_SRCS := \
 # Vector kernels require the RISC-V V extension.
 # Exclude them when the selected -march does not enable V.
 
-V2_DIR := $(SRC_DIR)/kernels/spgemm/v2
+SPGEMM_DIR := $(SRC_DIR)/kernels/spgemm
 
-V2_VECTOR_SRCS := \
-	$(V2_DIR)/accum_rvv_f32.c \
-	$(V2_DIR)/accum_contig_f32.c \
-	$(V2_DIR)/accum_adaptive_f32.c
+VECTOR_SRCS := \
+	$(SPGEMM_DIR)/accum_rvv_f32.c \
+	$(SPGEMM_DIR)/accum_contig_f32.c \
+	$(SPGEMM_DIR)/accum_adaptive_f32.c
 
 # Check only the RISC-V ISA string so unrelated flags cannot match "v".
 MARCH_HAS_V := $(shell printf '%s' '$(ARCH_FLAGS)' | \
 	grep -qE '(^|[[:space:]])-march=rv[0-9]+[a-z0-9_]*v' && echo yes)
 
 ifneq ($(MARCH_HAS_V),yes)
-EXCLUDED_SRCS += $(V2_VECTOR_SRCS)
+EXCLUDED_SRCS += $(VECTOR_SRCS)
 $(info ---> vector kernels excluded: V extension not enabled)
 else
 $(info ---> vector kernels included)

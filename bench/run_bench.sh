@@ -50,7 +50,7 @@
 #
 # Common cases:
 #   bash bench/run_bench.sh
-#   bash bench/run_bench.sh --kernels v2_contig_f32
+#   bash bench/run_bench.sh --kernels contig_f32
 #   bash bench/run_bench.sh --kernels intrinsic --runs 30
 #
 # Everything else is configured in bench/env.sh.
@@ -76,7 +76,7 @@ KERNEL_FILTER=""
 RUNS_FLAG=""
 EXP_FILE="bench/experiments.tsv"
 
-BASELINE_KERNEL="v2_scalar_f32"
+BASELINE_KERNEL="scalar_f32"
 
 usage() {
     awk 'NR==1 { next }
@@ -224,11 +224,11 @@ VALID_ARMS="baseline autovec intrinsic scalar_unroll adaptive"
 VALID_BUILDS="gc gcv"
 VALID_DTYPES="f32 f64 i8"
 
-# Vector kernels require rv64gcv. The v2 sources deliberately #error under gc
+# Vector kernels require rv64gcv. Those sources deliberately #error under gc
 # rather than silently falling back to scalar code.
 vector_kernel() {
     case "$1" in
-        rvv_f32|rvv_f64|rvv_i8|v2_rvv_*|v2_contig_*|v2_adaptive_*)
+        rvv_*|contig_*|adaptive_*)
             return 0
             ;;
         *)
@@ -492,7 +492,7 @@ fi
 # ============================================================================
 # --check-matrices
 #
-# v2 assumes canonical CSR input. Validate the dataset independently of the
+# The kernels assume canonical CSR input. Validate the dataset independently of the
 # kernels before benchmarking.
 # ============================================================================
 
@@ -528,7 +528,7 @@ if [ "$CHECK_MATRICES" = "1" ]; then
     "$CC" -Wall -Wextra -std=c11 \
         -Iinclude \
         -Itools/include \
-        -Isrc/kernels/spgemm/v2 \
+        -Isrc/kernels/spgemm \
         $march \
         -O2 \
         bench/csr_check.c \
@@ -554,9 +554,9 @@ if [ "$CHECK_MATRICES" = "1" ]; then
     echo ""
 
     if [ "$rc" -eq 0 ]; then
-        echo ">> all matrices satisfy the v2 canonical-CSR precondition."
+        echo ">> all matrices satisfy the canonical-CSR precondition."
     else
-        echo ">> PRECONDITION VIOLATED — do not run v2 kernels on this dataset until fixed."
+        echo ">> PRECONDITION VIOLATED — do not run the kernels on this dataset until fixed."
     fi
 
     exit "$rc"
@@ -929,7 +929,7 @@ build_all() {
         -std=c11 \
         -Iinclude \
         -Itools/include \
-        -Isrc/kernels/spgemm/v2 \
+        -Isrc/kernels/spgemm \
         $march \
         $extra \
         -O3 \
@@ -972,7 +972,7 @@ smoke_test() {
     tmp="$(mktemp "$OUT_DIR/.smoke_XXXXXX")"
 
     if ! $RUNNER "./bench/bench_$tag" \
-        --kernel v2_scalar_f32 \
+        --kernel scalar_f32 \
         --gen 64 64 0.05 1 \
         --runs 2 \
         --warmup 1 \
@@ -1003,7 +1003,7 @@ smoke_test() {
             -v fc="$F_CORRECT" \
             -v fcf="$F_CFLAGS" '
             NF == nf &&
-            $fk == "v2_scalar_f32" &&
+            $fk == "scalar_f32" &&
             $fb == b &&
             $fcf == cf &&
             $fc == 1

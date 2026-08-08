@@ -16,8 +16,8 @@
 #include <limits.h>
 
 #include "rv_sparse.h"
-#include "rvsp_v2.h"
-#include "rvsp_v2_sort.h"
+#include "rvsp_spgemm.h"
+#include "rvsp_sort.h"
 
 #if defined(__GNUC__) || defined(__clang__)
 #define RVSP_RESTRICT __restrict__

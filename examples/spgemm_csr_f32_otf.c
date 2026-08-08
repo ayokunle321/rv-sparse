@@ -104,7 +104,6 @@ int main(void) {
       .backend = RVSP_BACKEND_SCALAR,
       .input_dtype = RVSP_DTYPE_FP32,
       .output_dtype = RVSP_DTYPE_FP32,
-      .sort_output_indices = 1,
   };
 
   status = rvsp_spgemm_csr(&A, &B, &C, &options);

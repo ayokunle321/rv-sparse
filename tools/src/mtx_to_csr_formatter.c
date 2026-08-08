@@ -58,6 +58,92 @@ static int parse_banner(const char *buf, int *is_pattern, int *is_symmetric) {
   return 1;
 }
 
+typedef struct {
+  int col;
+  float val;
+} cv_pair_t;
+
+static int cmp_cv(const void *a, const void *b) {
+  int ca = ((const cv_pair_t *)a)->col;
+  int cb = ((const cv_pair_t *)b)->col;
+  return (ca > cb) - (ca < cb);
+}
+
+// Sort each row's columns ascending and sum repeated (row, col) entries.
+// Returns 0 on success, -1 on allocation failure.
+static int canonicalise_rows(int M, vec_t *row_ptr_v, vec_t *col_ind_v,
+                             vec_t *val_v) {
+  int *rp = (int *)row_ptr_v->data;
+  int *ci = (int *)col_ind_v->data;
+  float *vv = (float *)val_v->data;
+
+  int maxlen = 0;
+  for (int i = 0; i < M; i++) {
+    int len = rp[i + 1] - rp[i];
+    if (len > maxlen) {
+      maxlen = len;
+    }
+  }
+
+  cv_pair_t *buf = NULL;
+  if (maxlen > 0) {
+    buf = (cv_pair_t *)malloc((size_t)maxlen * sizeof(cv_pair_t));
+    if (!buf) {
+      return -1;
+    }
+  }
+
+  int *new_rp = (int *)malloc(((size_t)M + 1) * sizeof(int));
+  if (!new_rp) {
+    free(buf);
+    return -1;
+  }
+
+  // Folding only shrinks, so write stays at or behind the current row start
+  // and compacting in place cannot clobber unread input.
+  int write = 0;
+  new_rp[0] = 0;
+
+  for (int i = 0; i < M; i++) {
+    const int start = rp[i];
+    const int len = rp[i + 1] - start;
+
+    for (int t = 0; t < len; t++) {
+      buf[t].col = ci[start + t];
+      buf[t].val = vv[start + t];
+    }
+
+    qsort(buf, (size_t)len, sizeof(cv_pair_t), cmp_cv);
+
+    int t = 0;
+    while (t < len) {
+      const int col = buf[t].col;
+      float acc = buf[t].val;
+      t++;
+      while (t < len && buf[t].col == col) {
+        acc += buf[t].val;
+        t++;
+      }
+      ci[write] = col;
+      vv[write] = acc;
+      write++;
+    }
+
+    new_rp[i + 1] = write;
+  }
+
+  for (int i = 0; i <= M; i++) {
+    rp[i] = new_rp[i];
+  }
+
+  col_ind_v->size = (vec_size_t)write;
+  val_v->size = (vec_size_t)write;
+
+  free(new_rp);
+  free(buf);
+  return 0;
+}
+
 // ---------------------------------------------------------------------------
 // public API
 // ---------------------------------------------------------------------------
@@ -223,6 +309,17 @@ struct CSR assemble_csr_matrix(const char *filePath) {
   free(coo_row);
   free(coo_col);
   free(coo_val);
+
+  if (canonicalise_rows(M, matrix.row_ptr, matrix.col_ind, matrix.val) != 0) {
+    fprintf(stderr, "assemble_csr_matrix: out of memory canonicalising rows\n");
+    vector_free(matrix.row_ptr);
+    vector_free(matrix.col_ind);
+    vector_free(matrix.val);
+    matrix.row_ptr = NULL;
+    matrix.col_ind = NULL;
+    matrix.val = NULL;
+    return matrix;
+  }
 
   return matrix;
 }

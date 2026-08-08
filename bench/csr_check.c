@@ -5,7 +5,7 @@
  * with --mtx-sq have cols <= rows to avoid out-of-bounds accesses in A*A.
  *
  * Build:
- *   cc -O2 -Iinclude -Itools/include -Isrc/kernels/spgemm/v2 \
+ *   cc -O2 -Iinclude -Itools/include -Isrc/kernels/spgemm \
  *     bench/csr_check.c obj/<tag>/tools/[all].o -Llib/<tag> -lrvsparse -lm \
  *     -o bench/csr_check
  *
@@ -18,7 +18,7 @@
 
 #include "rv_sparse.h"
 #include "mtx_to_csr_formatter.h"
-#include "rvsp_v2.h"
+#include "rvsp_spgemm.h"
 #include "vec.h"
 
 #include <stdio.h>

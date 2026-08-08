@@ -47,7 +47,6 @@ extern "C"
     {
         RVSP_BACKEND_SCALAR,
         RVSP_BACKEND_SCALAR_UNROLL4,
-        RVSP_BACKEND_GCC_AUTOVEC,
         RVSP_BACKEND_RVV_INTRINSICS
     } rvsp_backend_t;
 
@@ -72,7 +71,6 @@ extern "C"
         rvsp_backend_t backend;
         rvsp_dtype_t input_dtype;
         rvsp_dtype_t output_dtype;
-        int sort_output_indices;
     } rvsp_spgemm_options_t;
 
     /*

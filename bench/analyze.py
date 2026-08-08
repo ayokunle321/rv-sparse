@@ -11,14 +11,14 @@ the same scalar source as the baseline, but is compiled with the V extension
 available. Comparing it against the gc baseline isolates compiler
 autovectorization instead of comparing the build against itself.
 
-cflags are part of the group identity because v2 tunables are compile-time
+cflags are part of the group identity because the tunables are compile-time
 macros. The denominator is always the default-cflags baseline.
 
 Usage:
     python3 bench/analyze.py bench/results/spgemm_raw.csv
     python3 bench/analyze.py bench/results/spgemm_raw.csv --csv-out summary.csv
     python3 bench/analyze.py bench/results/spgemm_raw.csv --no-csv
-    python3 bench/analyze.py bench/results/spgemm_raw.csv --baseline v2_rvv_f32
+    python3 bench/analyze.py bench/results/spgemm_raw.csv --baseline rvv_f32
 
 Pure standard library; runs on the board without pandas/numpy.
 """
@@ -33,13 +33,6 @@ from collections import defaultdict
 
 BASELINE_ARM = "baseline"
 BASELINE_BUILD = "gc"
-
-# Fallback for CSVs produced before the arm/build columns existed.
-LEGACY_BASELINE = {
-    "f32": "scalar_f32",
-    "f64": "scalar_f64",
-    "i8": "scalar_i8",
-}
 
 NO_CFLAGS = "-"
 
@@ -340,13 +333,7 @@ def _is_baseline(
             and build == (baseline_build or base_build)
         )
 
-    if entry["arm"] and entry["arm"] != "-":
-        return entry["arm"] == BASELINE_ARM
-
-    return (
-        kernel == LEGACY_BASELINE.get(key[4])
-        and build == base_build
-    )
+    return entry["arm"] == BASELINE_ARM
 
 
 def add_speedups(

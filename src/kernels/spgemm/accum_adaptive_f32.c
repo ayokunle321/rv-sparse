@@ -7,7 +7,7 @@
  * index structure and compile-time thresholds.
  */
 
-#include "rvsp_v2_common.h"
+#include "rvsp_common.h"
 
 #if defined(__riscv_vector)
 #include <riscv_vector.h>

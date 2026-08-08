@@ -6,14 +6,19 @@
  * Scalar accumulation with configurable loop unrolling.
  */
 
-#include "rvsp_v2_common.h"
+#include "rvsp_common.h"
 
+/*
+ * 0 emits a plain loop and leaves all instruction-level parallelism to the
+ * compiler, which is what makes the baseline-vs-autovec pair measure the
+ * compiler alone. 4 and 8 hand it independent FMA chains.
+ */
 #ifndef RVSP_SCALAR_UNROLL
-#define RVSP_SCALAR_UNROLL 4
+#define RVSP_SCALAR_UNROLL 0
 #endif
 
-#if RVSP_SCALAR_UNROLL != 4 && RVSP_SCALAR_UNROLL != 8
-#error "RVSP_SCALAR_UNROLL must be 4 or 8"
+#if RVSP_SCALAR_UNROLL != 0 && RVSP_SCALAR_UNROLL != 4 && RVSP_SCALAR_UNROLL != 8
+#error "RVSP_SCALAR_UNROLL must be 0, 4 or 8"
 #endif
 
 static inline void
@@ -49,6 +54,7 @@ rvsp_accum_row(
     }
 #endif
 
+#if RVSP_SCALAR_UNROLL >= 4
     for (; p + 3 < b_nnz; p += 4)
     {
         const int32_t c0 = b_col_idx[p + 0];
@@ -61,6 +67,7 @@ rvsp_accum_row(
         acc[c2] += a_val * b_values[p + 2];
         acc[c3] += a_val * b_values[p + 3];
     }
+#endif
 
     for (; p < b_nnz; p++)
     {
