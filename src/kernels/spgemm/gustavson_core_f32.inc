@@ -3,7 +3,8 @@
  *
  * SPDX-License-Identifier: GPL-3.0-only
  *
- * Gustavson SpGEMM driver. Each kernel provides an accumulation routine.
+ * Gustavson SpGEMM driver. Each kernel supplies its own rvsp_accum_row and
+ * includes this file to generate the numeric pass and the public entry point.
  */
 
 #ifndef RVSP_KERNEL_NAME
@@ -13,8 +14,6 @@
 #define RVSP_CAT_(a, b) a##b
 #define RVSP_CAT(a, b) RVSP_CAT_(a, b)
 #define RVSP_NUMERIC_FN RVSP_CAT(RVSP_KERNEL_NAME, _numeric)
-
-/* Symbolic structure is computed separately from numeric accumulation. */
 
 void RVSP_NUMERIC_FN(
     int32_t a_rows,
@@ -49,6 +48,8 @@ void RVSP_NUMERIC_FN(
                 acc);
         }
 
+        /* Drain the touched acc[] slots into C and clear them for the next
+         * row, so acc stays zeroed without a full sweep. */
         const int32_t c_start = c_row_ptr[row];
         const int32_t c_end = c_row_ptr[row + 1];
 
@@ -121,6 +122,7 @@ rvsp_status_t RVSP_KERNEL_NAME(
 
     int64_t total_nnz = 0;
 
+    /* Symbolic pass first, so C can be sized exactly before the numeric pass. */
     rvsp_status_t status =
         rvsp_symbolic_count(
             a_rows,
@@ -140,6 +142,7 @@ rvsp_status_t RVSP_KERNEL_NAME(
         return status;
     }
 
+    /* malloc(0) is implementation-defined, so floor the allocation at 1. */
     const size_t alloc_nnz =
         total_nnz > 0 ? (size_t)total_nnz : 1;
 

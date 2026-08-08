@@ -3,7 +3,7 @@
  *
  * SPDX-License-Identifier: GPL-3.0-only
  *
- * Applies gather, FMA, and scatter to each input span.
+ * Gather-FMA-scatter accumulation.
  */
 
 #include "rvsp_common.h"
@@ -35,6 +35,8 @@ rvsp_accum_row(
         const vint32m2_t vidx =
             __riscv_vle32_v_i32m2(&b_col_idx[p], vl);
 
+        /* canonical CSR has no repeated column in a row, so the gather and
+         * scatter below cannot alias within one vl */
         const vuint32m2_t voff =
             __riscv_vreinterpret_v_i32m2_u32m2(
                 __riscv_vsll_vx_i32m2(vidx, 2, vl));

@@ -3,8 +3,8 @@
  *
  * SPDX-License-Identifier: GPL-3.0-only
  *
- * Column sorting using insertion sort for short rows and LSD radix sort
- * for larger rows.
+ * Column sorting. Insertion sort for short rows, LSD radix sort for longer
+ * ones.
  */
 
 #ifndef RVSP_SORT_H
@@ -13,6 +13,7 @@
 #include <stdint.h>
 #include <string.h>
 
+/* Row length below which insertion sort beats radix. */
 #ifndef RVSP_SORT_INSERTION_LIMIT
 #define RVSP_SORT_INSERTION_LIMIT 40
 #endif
@@ -51,6 +52,7 @@ rvsp_radix_sort_i32(
         return;
     }
 
+    /* One pass per radix digit, capped at the number of digits max_val needs. */
     int32_t passes = 1;
 
     while (passes < 4 &&
@@ -93,6 +95,7 @@ rvsp_radix_sort_i32(
         dst = swap;
     }
 
+    /* Odd pass count leaves the result in tmp, so copy it back. */
     if (src != keys)
     {
         memcpy(keys, src, (size_t)n * sizeof(int32_t));

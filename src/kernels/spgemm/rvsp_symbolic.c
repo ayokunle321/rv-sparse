@@ -3,15 +3,13 @@
  *
  * SPDX-License-Identifier: GPL-3.0-only
  *
- * Symbolic phases shared by all kernels.
- *
- * These phases determine the structure of C before the numeric pass computes
- * values.
+ * Symbolic phases shared by all kernels. These determine the structure of C
+ * before the numeric pass computes values.
  */
 
 #include "rvsp_common.h"
 
-/* Phase 1 determines the output row sizes and operation counts. */
+/* Counts the nonzeros per output row and prefix-sums them into c_row_ptr. */
 rvsp_status_t rvsp_symbolic_count(
     int32_t a_rows,
     const int32_t *RVSP_RESTRICT a_row_ptr,
@@ -54,6 +52,7 @@ rvsp_status_t rvsp_symbolic_count(
             }
         }
 
+        /* Clear only the columns this row touched, so the sweep stays O(nnz). */
         for (int32_t i = 0; i < touched_count; i++)
         {
             mark[touched[i]] = 0;
@@ -88,9 +87,7 @@ rvsp_status_t rvsp_symbolic_count(
     return RVSP_SUCCESS;
 }
 
-/*
- * Phase 2 writes the sorted column structure of C.
- */
+/* Writes each row's column indices into C and sorts them ascending. */
 void rvsp_symbolic_fill(
     int32_t a_rows,
     int32_t b_cols,

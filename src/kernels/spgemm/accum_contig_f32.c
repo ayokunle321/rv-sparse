@@ -3,8 +3,8 @@
  *
  * SPDX-License-Identifier: GPL-3.0-only
  *
- * Detects contiguous column runs and uses unit-stride vector operations
- * for those runs.
+ * Runs of consecutive column indices are accumulated with unit-stride vector
+ * ops. Everything else falls back to scalar.
  */
 
 #include "rvsp_common.h"
@@ -15,12 +15,10 @@
 #error "accum_contig_f32.c requires the RISC-V V extension"
 #endif
 
-/* Minimum run length for unit-stride vector execution. */
 #ifndef RVSP_CONTIG_MIN
 #define RVSP_CONTIG_MIN 8
 #endif
 
-/* Maximum prefix examined when searching for a contiguous run. */
 #ifndef RVSP_CONTIG_SCAN_AHEAD
 #define RVSP_CONTIG_SCAN_AHEAD 256
 #endif
@@ -60,6 +58,8 @@ rvsp_scalar_span(
     }
 }
 
+/* A run lands in consecutive acc[] slots, so it needs only a unit-stride
+ * load, FMA, and store rather than a gather. */
 static inline void
 rvsp_contig_span(
     float a_val,
@@ -91,6 +91,11 @@ rvsp_contig_span(
     }
 }
 
+/*
+ * Returns the offset to the first run of at least min_run consecutive indices
+ * and writes its length to run_out. If none is found within the scan-ahead
+ * cap, returns the scanned length with run_out 0.
+ */
 static inline int32_t
 rvsp_next_contig_run(
     const int32_t *RVSP_RESTRICT idx,

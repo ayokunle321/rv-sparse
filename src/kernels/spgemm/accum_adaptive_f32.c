@@ -3,8 +3,8 @@
  *
  * SPDX-License-Identifier: GPL-3.0-only
  *
- * Selects scalar, gather, or unit-stride execution per input span based on
- * index structure and compile-time thresholds.
+ * Picks scalar, gather, or unit-stride execution per span based on the
+ * column-index structure of each row.
  */
 
 #include "rvsp_common.h"
@@ -15,17 +15,16 @@
 #error "accum_adaptive_f32.c requires the RISC-V V extension"
 #endif
 
-/* Minimum run length for unit-stride vector execution. */
+/* Shortest consecutive run worth handling with unit-stride vectors. */
 #ifndef RVSP_CONTIG_MIN
 #define RVSP_CONTIG_MIN 8
 #endif
 
-/* Maximum prefix examined when searching for a contiguous run. */
 #ifndef RVSP_CONTIG_SCAN_AHEAD
 #define RVSP_CONTIG_SCAN_AHEAD 256
 #endif
 
-/* Minimum irregular span length for gather execution. */
+/* Shortest irregular span worth a gather rather than scalar. */
 #ifndef RVSP_GATHER_MIN
 #define RVSP_GATHER_MIN 16
 #endif
@@ -65,6 +64,8 @@ rvsp_scalar_span(
     }
 }
 
+/* A run lands in consecutive acc[] slots, so it needs only a unit-stride
+ * load, FMA, and store rather than a gather. */
 static inline void
 rvsp_contig_span(
     float a_val,
@@ -95,7 +96,8 @@ rvsp_contig_span(
     }
 }
 
-/* Requires canonical CSR column indices. */
+/* Canonical CSR has no repeated column in a row, so the gather and scatter
+ * cannot alias within one vl. */
 static inline void
 rvsp_gather_span(
     float a_val,
@@ -134,6 +136,11 @@ rvsp_gather_span(
     }
 }
 
+/*
+ * Returns the offset to the first run of at least min_run consecutive indices
+ * and writes its length to run_out. If none is found within the scan-ahead
+ * cap, returns the scanned length with run_out 0.
+ */
 static inline int32_t
 rvsp_next_contig_run(
     const int32_t *RVSP_RESTRICT idx,
@@ -183,7 +190,6 @@ rvsp_next_contig_run(
     return limit;
 }
 
-/* Use gather for sufficiently large irregular spans and scalar otherwise. */
 static inline void
 rvsp_irregular_span(
     float a_val,
@@ -212,7 +218,6 @@ rvsp_accum_row(
     const float *RVSP_RESTRICT b_values,
     float *RVSP_RESTRICT acc)
 {
-    /* Short rows cannot contain a qualifying contiguous run. */
     if (b_nnz < RVSP_CONTIG_MIN)
     {
         rvsp_irregular_span(

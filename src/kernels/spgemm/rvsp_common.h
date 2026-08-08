@@ -32,6 +32,11 @@
 #define RVSP_ALIGN_UP(x, a) \
     (((x) + ((a) - 1)) & ~((size_t)(a) - 1))
 
+/*
+ * Scratch shared across a call. acc is the dense accumulator, mark and
+ * touched track which columns are live during the symbolic pass, and scratch
+ * backs the column sort. Each region is 64-byte aligned in one buffer.
+ */
 typedef struct
 {
     float *acc;
@@ -73,6 +78,7 @@ rvsp_ws_bind(
     ws->scratch = (int32_t *)p;
 }
 
+/* Symbolic count needs only mark and touched. */
 static inline size_t
 rvsp_count_ws_bytes(int32_t b_cols)
 {
@@ -101,6 +107,7 @@ rvsp_count_ws_bind(
     ws->scratch = NULL;
 }
 
+/* Numeric compute needs acc, mark, and scratch but not touched. */
 static inline size_t
 rvsp_compute_ws_bytes(int32_t b_cols)
 {

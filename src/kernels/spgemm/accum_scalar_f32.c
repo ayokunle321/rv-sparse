@@ -8,11 +8,6 @@
 
 #include "rvsp_common.h"
 
-/*
- * 0 emits a plain loop and leaves all instruction-level parallelism to the
- * compiler, which is what makes the baseline-vs-autovec pair measure the
- * compiler alone. 4 and 8 hand it independent FMA chains.
- */
 #ifndef RVSP_SCALAR_UNROLL
 #define RVSP_SCALAR_UNROLL 0
 #endif

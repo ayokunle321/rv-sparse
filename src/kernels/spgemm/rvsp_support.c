@@ -28,6 +28,11 @@ rvsp_spgemm_buffer_size(
     return RVSP_SUCCESS;
 }
 
+/*
+ * Checks that CSR is canonical (row_ptr non-decreasing from 0, columns in
+ * range, ascending, no duplicates). On failure returns the reason and, when
+ * bad_row_out is given, the offending row.
+ */
 rvsp_csr_status_t
 rvsp_csr_check(
     int32_t rows,
@@ -92,6 +97,7 @@ rvsp_csr_check(
                 return RVSP_CSR_COL_OUT_OF_RANGE;
             }
 
+            /* prev starts at -1, so the first column of a row always passes. */
             if (col == prev)
             {
                 if (bad_row_out != NULL)
