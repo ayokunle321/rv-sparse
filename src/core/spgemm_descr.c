@@ -21,28 +21,25 @@ struct rvsp_spgemm_descr
     rvsp_spgemm_algo_t algo;
     int estimated;
 
-    /* Structure computed during work_estimation(). */
+    /* Structure computed during work_estimation. */
     int32_t *c_row_ptr;
     int32_t c_nnz;
     int64_t *op_counts;
 
-    /* C->col_idx populated by the most recent symbolic fill. */
+    /* The C->col_idx the most recent fill wrote into, for reuse detection. */
     const int32_t *filled_into;
 
-    /* Input dimensions captured by work_estimation(). */
+    /* Input dimensions captured at estimation, checked again at compute. */
     int32_t a_rows, a_cols, a_nnz;
     int32_t b_rows, b_cols, b_nnz;
 
     size_t workspace_bytes;
 };
 
-/* ------------------------------------------------------------------ */
-/* Algorithm table                                                     */
-/* ------------------------------------------------------------------ */
-
 typedef void (*rvsp_numeric_fn)(RVSP_NUMERIC_PARAMS);
 
-/* Return the numeric implementation available for the selected algorithm. */
+/* Vector strategies resolve to NULL on a non-vector build, which surfaces as
+ * RVSP_ERROR_UNSUPPORTED_BACKEND to the caller. */
 static rvsp_numeric_fn numeric_for(rvsp_spgemm_algo_t algo)
 {
     switch (algo)
@@ -65,10 +62,6 @@ static rvsp_numeric_fn numeric_for(rvsp_spgemm_algo_t algo)
         return NULL;
     }
 }
-
-/* ------------------------------------------------------------------ */
-/* Lifecycle                                                           */
-/* ------------------------------------------------------------------ */
 
 rvsp_status_t rvsp_spgemm_descr_create(rvsp_spgemm_descr_t *descr)
 {
@@ -114,7 +107,8 @@ rvsp_status_t rvsp_spgemm_set_algo(rvsp_spgemm_descr_t descr,
         return RVSP_ERROR_NULL_POINTER;
     }
 
-    /* Algorithm selection must happen before structure estimation. */
+    /* The algorithm is baked into the estimated structure, so it cannot change
+     * afterward. */
     if (descr->estimated)
     {
         return RVSP_ERROR_INVALID_ARGUMENT;
@@ -130,6 +124,8 @@ rvsp_status_t rvsp_spgemm_set_algo(rvsp_spgemm_descr_t descr,
     return RVSP_SUCCESS;
 }
 
+/* Marks the cached column structure stale, forcing the next compute to refill.
+ * Call this when the output's col_idx storage is replaced. */
 void rvsp_spgemm_invalidate_structure(rvsp_spgemm_descr_t descr)
 {
     if (descr != NULL)
@@ -137,10 +133,6 @@ void rvsp_spgemm_invalidate_structure(rvsp_spgemm_descr_t descr)
         descr->filled_into = NULL;
     }
 }
-
-/* ------------------------------------------------------------------ */
-/* Shared input checking                                               */
-/* ------------------------------------------------------------------ */
 
 static rvsp_status_t check_operand(const rvsp_csr_matrix_t *M)
 {
@@ -166,10 +158,6 @@ static rvsp_status_t check_operand(const rvsp_csr_matrix_t *M)
 
     return RVSP_SUCCESS;
 }
-
-/* ------------------------------------------------------------------ */
-/* Phase 1: structure                                                  */
-/* ------------------------------------------------------------------ */
 
 rvsp_status_t rvsp_spgemm_work_estimation(rvsp_spgemm_descr_t descr,
                                           const rvsp_csr_matrix_t *A,
@@ -199,7 +187,7 @@ rvsp_status_t rvsp_spgemm_work_estimation(rvsp_spgemm_descr_t descr,
         return RVSP_ERROR_INVALID_ARGUMENT;
     }
 
-    /* A new estimation replaces the descriptor's previous structure. */
+    /* Re-estimating discards any structure from a previous call. */
     free(descr->c_row_ptr);
     free(descr->op_counts);
     descr->c_row_ptr = NULL;
@@ -225,7 +213,6 @@ rvsp_status_t rvsp_spgemm_work_estimation(rvsp_spgemm_descr_t descr,
     rvsp_ws_t ws;
     rvsp_count_ws_bind(&ws, count_ws, B->cols);
 
-    /* symbolic_count expects cleared marks. */
     memset(ws.mark, 0, (size_t)B->cols * sizeof(uint8_t));
 
     int64_t total_nnz = 0;
@@ -267,10 +254,6 @@ rvsp_status_t rvsp_spgemm_work_estimation(rvsp_spgemm_descr_t descr,
     return RVSP_SUCCESS;
 }
 
-/* ------------------------------------------------------------------ */
-/* Phase 2: values                                                     */
-/* ------------------------------------------------------------------ */
-
 rvsp_status_t rvsp_spgemm_compute(rvsp_spgemm_descr_t descr,
                                   const rvsp_csr_matrix_t *A,
                                   const rvsp_csr_matrix_t *B,
@@ -299,7 +282,8 @@ rvsp_status_t rvsp_spgemm_compute(rvsp_spgemm_descr_t descr,
         return status;
     }
 
-    /* A and B must match the inputs used during structure estimation. */
+    /* Dimensions must match the ones the structure was estimated from,
+     * otherwise the cached c_row_ptr does not describe this product. */
     if (A->rows != descr->a_rows || A->cols != descr->a_cols ||
         A->nnz != descr->a_nnz ||
         B->rows != descr->b_rows || B->cols != descr->b_cols ||
@@ -338,14 +322,11 @@ rvsp_status_t rvsp_spgemm_compute(rvsp_spgemm_descr_t descr,
     rvsp_ws_t ws;
     rvsp_compute_ws_bind(&ws, workspace, descr->b_cols);
 
-    /* Restore the precomputed row structure for this output. */
     memcpy(C->row_ptr, descr->c_row_ptr,
            ((size_t)descr->a_rows + 1) * sizeof(int32_t));
 
-    /*
-     * Reuse C->col_idx when the caller is using the same output storage.
-     * Call rvsp_spgemm_invalidate_structure() if that storage was replaced.
-     */
+    /* Skip the fill when this same output buffer already holds the structure.
+     * The caller signals a replaced buffer via rvsp_spgemm_invalidate_structure. */
     if (descr->filled_into != C->col_idx)
     {
         memset(ws.mark, 0, (size_t)descr->b_cols * sizeof(uint8_t));
@@ -359,7 +340,6 @@ rvsp_status_t rvsp_spgemm_compute(rvsp_spgemm_descr_t descr,
         descr->filled_into = C->col_idx;
     }
 
-    /* numeric requires a cleared accumulator. */
     memset(ws.acc, 0, (size_t)descr->b_cols * sizeof(float));
 
     numeric(descr->a_rows,
@@ -373,10 +353,6 @@ rvsp_status_t rvsp_spgemm_compute(rvsp_spgemm_descr_t descr,
 
     return RVSP_SUCCESS;
 }
-
-/* ------------------------------------------------------------------ */
-/* Diagnostics                                                         */
-/* ------------------------------------------------------------------ */
 
 rvsp_status_t rvsp_spgemm_get_op_counts(rvsp_spgemm_descr_t descr,
                                         int64_t *op_counts_out,
