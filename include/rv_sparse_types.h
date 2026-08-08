@@ -76,32 +76,25 @@ extern "C"
     } rvsp_spgemm_options_t;
 
     /*
-     * Opaque SpGEMM operation descriptor.
-     *
-     * Holds the selected algorithm and the computed structure of C between the
-     * two phases. The workspace is NOT held here: it stays caller owned, which
-     * is what keeps allocation out of the timed path.
-     *
-     * Note this is the only opaque type in the library. rvsp_csr_matrix_t above
-     * remains transparent and caller allocated.
-     */
+    * Opaque SpGEMM operation descriptor.
+    *
+    * Stores the selected algorithm and analyzed output structure between
+    * the structure and numeric phases.
+    */
     typedef struct rvsp_spgemm_descr *rvsp_spgemm_descr_t;
 
     /*
-     * Accumulate strategy for the fp32 v2 kernels.
-     *
-     * DEFAULT is the scalar accumulator and is the only one available in a
-     * build without the V extension. The other three are always present in this
-     * enum so the header does not change shape with -march; availability is a
-     * run time question, and selecting one the current build cannot provide
-     * returns RVSP_ERROR_UNSUPPORTED_BACKEND.
-     */
+    * SpGEMM accumulation strategy.
+    *
+    * RVSP_SPGEMM_ALGO_DEFAULT uses the scalar implementation.
+    * The RVV strategies require a build with the RISC-V Vector extension.
+    */
     typedef enum
     {
-        RVSP_SPGEMM_ALGO_DEFAULT = 0, /* scalar                              */
-        RVSP_SPGEMM_ALGO_RVV,         /* gather / FMA / scatter, needs V     */
-        RVSP_SPGEMM_ALGO_CONTIG,      /* unit stride on runs, needs V        */
-        RVSP_SPGEMM_ALGO_ADAPTIVE     /* runs + gather + scalar, needs V     */
+        RVSP_SPGEMM_ALGO_DEFAULT = 0, /* scalar */
+        RVSP_SPGEMM_ALGO_RVV,         /* gather and scatter */
+        RVSP_SPGEMM_ALGO_CONTIG,      /* unit stride on contiguous runs */
+        RVSP_SPGEMM_ALGO_ADAPTIVE     /* selects between available strategies */
     } rvsp_spgemm_algo_t;
 
 #ifdef __cplusplus

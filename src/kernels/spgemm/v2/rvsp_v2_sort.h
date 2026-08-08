@@ -3,23 +3,8 @@
  *
  * SPDX-License-Identifier: GPL-3.0-only
  *
- * Column index sorting, shared by every v2 kernel.
- *
- * Why this exists
- * The v1 kernels called qsort() with a function pointer comparator on every
- * output row, including two element rows. On a matrix averaging ~88 nonzeros
- * per output row across ~100k rows that is on the order of 10^7 to 10^8
- * indirect calls, and it landed in the denominator of every speedup number
- * that project produced. Worse, one v1 kernel had an insertion sort cutoff
- * and the others did not, so the sort cost differed between kernels being
- * compared against each other.
- *
- * Everything here is comparator free and used identically by all four v2
- * kernels, so sorting cancels exactly in any v2 vs v2 comparison.
- *
- * Insertion sort below RVSP_SORT_INSERTION_LIMIT, LSD radix above. Radix
- * passes are bounded by the largest column index rather than fixed at four,
- * so a matrix with fewer than 65536 columns costs two passes, not four.
+ * Column sorting using insertion sort for short rows and LSD radix sort
+ * for larger rows.
  */
 
 #ifndef RVSP_SORT_H
@@ -32,11 +17,12 @@
 #define RVSP_SORT_INSERTION_LIMIT 40
 #endif
 
-#define RVSP_RADIX_BITS   8
+#define RVSP_RADIX_BITS 8
 #define RVSP_RADIX_BUCKETS (1 << RVSP_RADIX_BITS)
-#define RVSP_RADIX_MASK   (RVSP_RADIX_BUCKETS - 1)
+#define RVSP_RADIX_MASK (RVSP_RADIX_BUCKETS - 1)
 
-static inline void rvsp_insertion_sort_i32(int32_t *x, int32_t n)
+static inline void
+rvsp_insertion_sort_i32(int32_t *x, int32_t n)
 {
     for (int32_t i = 1; i < n; i++)
     {
@@ -53,14 +39,12 @@ static inline void rvsp_insertion_sort_i32(int32_t *x, int32_t n)
     }
 }
 
-/*
- * LSD radix sort over non negative int32 keys.
- *
- * tmp must hold at least n elements. max_val is an upper bound on the keys
- * and only controls how many digit passes run; passing b_cols - 1 is right.
- */
-static inline void rvsp_radix_sort_i32(int32_t *keys, int32_t *tmp,
-                                          int32_t n, int32_t max_val)
+static inline void
+rvsp_radix_sort_i32(
+    int32_t *keys,
+    int32_t *tmp,
+    int32_t n,
+    int32_t max_val)
 {
     if (n <= 1)
     {
@@ -69,7 +53,8 @@ static inline void rvsp_radix_sort_i32(int32_t *keys, int32_t *tmp,
 
     int32_t passes = 1;
 
-    while (passes < 4 && (max_val >> (RVSP_RADIX_BITS * passes)) > 0)
+    while (passes < 4 &&
+           (max_val >> (RVSP_RADIX_BITS * passes)) > 0)
     {
         passes++;
     }
@@ -114,8 +99,12 @@ static inline void rvsp_radix_sort_i32(int32_t *keys, int32_t *tmp,
     }
 }
 
-static inline void rvsp_sort_columns(int32_t *cols, int32_t *tmp,
-                                        int32_t n, int32_t max_col)
+static inline void
+rvsp_sort_columns(
+    int32_t *cols,
+    int32_t *tmp,
+    int32_t n,
+    int32_t max_col)
 {
     if (n <= 1)
     {
@@ -131,4 +120,4 @@ static inline void rvsp_sort_columns(int32_t *cols, int32_t *tmp,
     rvsp_radix_sort_i32(cols, tmp, n, max_col);
 }
 
-#endif /* RVSP_SORT_H */
+#endif
