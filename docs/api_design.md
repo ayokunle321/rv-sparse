@@ -35,7 +35,7 @@ int32_t *col_idx;   /* length nnz      */
 void    *values;    /* length nnz      */
 rvsp_dtype_t dtype;
 int owns_data;      /* set when the library allocated the arrays */
-````
+```
 
 ### rvsp_spgemm_algo_t
 

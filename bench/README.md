@@ -1,6 +1,3 @@
-Yeah, this one can be tightened too. The technical detail is useful, so I would not simplify it aggressively. I’d mainly make the prose less formal and remove a few places where the same idea is stated twice.
-
-````md
 # rv-sparse benchmark harness
 
 Times the SpGEMM kernels on one core, checks every result against a reference
@@ -15,7 +12,7 @@ machine. Then run the preflight check.
 cp bench/env.sh.example bench/env.sh
 $EDITOR bench/env.sh
 bash bench/run_bench.sh --check
-````
+```
 
 `--check` builds and runs a small vector program to verify the toolchain,
 derives runtime library paths from `CC`, and warns about conditions that can
@@ -183,6 +180,3 @@ each config, and experiment order is shuffled per matrix with a recorded seed.
 For effects below about 5%, isolate the benchmark core with `isolcpus` or a
 cpuset. `taskset` pins the process but does not keep the scheduler off the
 core.
-
-```
-```
