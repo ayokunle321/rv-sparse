@@ -1,4 +1,4 @@
-# RV-Sparse API Reference
+# rv-sparse API Reference
 
 C API for CSR SpGEMM, `C = A × B`, using FP32. Include `rv_sparse.h` and link
 against the library.

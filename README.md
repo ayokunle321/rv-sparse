@@ -1,4 +1,4 @@
-# RV-Sparse
+# rv-sparse
 
 Sparse linear algebra for RISC-V. RV-Sparse computes CSR sparse matrix-matrix
 multiplication (SpGEMM), `C = A × B`, in FP32. It includes a scalar kernel and
