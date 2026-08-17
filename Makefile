@@ -111,6 +111,15 @@ VECTOR_SRCS := \
 MARCH_HAS_V := $(shell printf '%s' '$(ARCH_FLAGS)' | \
 	grep -qE '(^|[[:space:]])-march=rv[0-9]+[a-z0-9_]*v' && echo yes)
 
+# The OpenMP kernel includes <omp.h>, which only exists when the toolchain
+# ships OpenMP. Build with OPENMP=1 to include it.
+OMP_SRCS := $(SPGEMM_DIR)/accum_scalar_omp_f32.c
+
+ifneq ($(OPENMP),1)
+EXCLUDED_SRCS += $(OMP_SRCS)
+$(info ---> OpenMP kernel excluded: build with OPENMP=1 to include it)
+endif
+
 ifneq ($(MARCH_HAS_V),yes)
 EXCLUDED_SRCS += $(VECTOR_SRCS)
 $(info ---> vector kernels excluded: V extension not enabled)

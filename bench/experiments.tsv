@@ -23,31 +23,17 @@
 #   contig vs adaptive    gather dispatch
 #   rvv vs adaptive       dispatch vs always-gather
 
-arm	kernel	dtype	build	cflags
-baseline	scalar_f32	f32	gc	-
-autovec	scalar_f32	f32	gcv	-
-intrinsic	rvv_f32	f32	gcv	-
-intrinsic	contig_f32	f32	gcv	-
-adaptive	adaptive_f32	f32	gcv	-
-
-# Tunable sweeps. Uncomment individual rows as needed.
-#
-# Each distinct cflags string produces a separate build.
-#
-# RVSP_SCALAR_UNROLL:     4, 8
-# RVSP_CONTIG_MIN:        4, 8, 16, 32
-# RVSP_CONTIG_SCAN_AHEAD: 64, 256, 1024
-# RVSP_GATHER_MIN:        8, 16, 32, 64, 128
-#
-# Keep RVSP_SORT_INSERTION_LIMIT fixed across kernels.
-
-# baseline	scalar_f32	f32	gc	-DRVSP_SCALAR_UNROLL=8
-# autovec	scalar_f32	f32	gcv	-DRVSP_SCALAR_UNROLL=8
-
-# intrinsic	contig_f32	f32	gcv	-DRVSP_CONTIG_MIN=4
-# intrinsic	contig_f32	f32	gcv	-DRVSP_CONTIG_MIN=16
-# intrinsic	contig_f32	f32	gcv	-DRVSP_CONTIG_MIN=32
-
-# adaptive	adaptive_f32	f32	gcv	-DRVSP_GATHER_MIN=8
-# adaptive	adaptive_f32	f32	gcv	-DRVSP_GATHER_MIN=32
-# adaptive	adaptive_f32	f32	gcv	-DRVSP_GATHER_MIN=64
+arm	kernel	dtype	build	cflags	threads	reorder	unroll
+baseline	scalar_f32	f32	gc	-	1	none	0
+autovec	scalar_f32	f32	gcv	-	1	none	0
+intrinsic	rvv_f32	f32	gcv	-	1	none	0
+intrinsic	contig_f32	f32	gcv	-	1	none	0
+adaptive	adaptive_f32	f32	gcv	-	1	none	0
+scalar_unroll	scalar_f32	f32	gcv	-DRVSP_SCALAR_UNROLL=4	1	none	4
+scalar_unroll	scalar_f32	f32	gcv	-DRVSP_SCALAR_UNROLL=8	1	none	8
+omp	scalar_omp_f32	f32	gc	-fopenmp	1	none	0
+omp	scalar_omp_f32	f32	gc	-fopenmp	2	none	0
+omp	scalar_omp_f32	f32	gc	-fopenmp	4	none	0
+omp	scalar_omp_f32	f32	gc	-fopenmp	8	none	0
+magnus	magnus_f32	f32	gc	-	1	none	0
+reordered	scalar_f32	f32	gc	-	1	rcm	0

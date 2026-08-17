@@ -25,6 +25,7 @@
 
 #include "rv_sparse.h"
 #include "rvsp_spgemm.h"
+#include "rvsp_reorder.h"
 #include "genmat.h"
 #include "mtx_to_csr_formatter.h"
 #include "vec.h"
@@ -35,6 +36,15 @@
 #include <stdint.h>
 #include <time.h>
 #include <math.h>
+
+/*
+ * Mirrors the kernel default. run_bench.sh passes the same cflags to the
+ * library and to this file, so the value recorded in the CSV is the value the
+ * kernel was built with.
+ */
+#ifndef RVSP_SCALAR_UNROLL
+#define RVSP_SCALAR_UNROLL 0
+#endif
 
 /*
  * Optional hardware counters. When enabled, counters cover only the
@@ -164,12 +174,24 @@ typedef rvsp_status_t (*spgemm_fn)(
     }
 
 KERNEL_WRAP(scalar_f32_w, rvsp_spgemm_scalar_f32)
+KERNEL_WRAP(magnus_f32_w, rvsp_spgemm_magnus_f32)
+
+#if defined(_OPENMP)
+KERNEL_WRAP(scalar_omp_f32_w, rvsp_spgemm_scalar_omp_f32)
+#endif
 
 #if defined(__riscv_vector)
 KERNEL_WRAP(rvv_f32_w,      rvsp_spgemm_rvv_f32)
 KERNEL_WRAP(contig_f32_w,   rvsp_spgemm_contig_f32)
 KERNEL_WRAP(adaptive_f32_w, rvsp_spgemm_adaptive_f32)
 #endif
+
+/* Which workspace layout the kernel binds from the buffer the harness passes. */
+typedef enum {
+    WS_DEFAULT = 0,   /* acc / mark / touched / scratch, sized by b_cols */
+    WS_OMP,           /* one accumulator per thread */
+    WS_MAGNUS         /* chunk accumulator, histograms, bin buffers */
+} ws_kind_t;
 
 typedef struct {
     const char   *name;
@@ -178,20 +200,28 @@ typedef struct {
     const char   *dtype_str;
     spgemm_fn     ref;
     const char   *ref_name;
+    ws_kind_t     ws_kind;
 } kernel_entry_t;
 
 /* Each current kernel is validated against the matching scalar reference. */
 static const kernel_entry_t KERNELS[] = {
     { "scalar_f32", scalar_f32_w, RVSP_DTYPE_FP32, "f32",
-      scalar_f32_w, "scalar_f32" },
+      scalar_f32_w, "scalar_f32", WS_DEFAULT },
+    { "magnus_f32", magnus_f32_w, RVSP_DTYPE_FP32, "f32",
+      scalar_f32_w, "scalar_f32", WS_MAGNUS },
+
+#if defined(_OPENMP)
+    { "scalar_omp_f32", scalar_omp_f32_w, RVSP_DTYPE_FP32, "f32",
+      scalar_f32_w, "scalar_f32", WS_OMP },
+#endif
 
 #if defined(__riscv_vector)
     { "rvv_f32", rvv_f32_w, RVSP_DTYPE_FP32, "f32",
-      scalar_f32_w, "scalar_f32" },
+      scalar_f32_w, "scalar_f32", WS_DEFAULT },
     { "contig_f32", contig_f32_w, RVSP_DTYPE_FP32, "f32",
-      scalar_f32_w, "scalar_f32" },
+      scalar_f32_w, "scalar_f32", WS_DEFAULT },
     { "adaptive_f32", adaptive_f32_w, RVSP_DTYPE_FP32, "f32",
-      scalar_f32_w, "scalar_f32" },
+      scalar_f32_w, "scalar_f32", WS_DEFAULT },
 #endif
 };
 
@@ -531,7 +561,8 @@ static void free_raw(raw_csr_t *raw) {
 #define CSV_HEADER \
     "label,kernel,arm,build,march,cflags,cc_version,dtype," \
     "rows,cols,nnz_a,nnz_b,nnz_c,flops,op_mean,op_max,op_var," \
-    "run,time_s,gops,correct,cycles,instructions"
+    "run,time_s,gops,correct,cycles,instructions," \
+    "threads,reorder,unroll,reorder_time_s"
 
 static void usage(const char *prog) {
     fprintf(stderr,
@@ -574,6 +605,8 @@ int main(int argc, char **argv) {
     const char *march = "-";
     const char *cc_version = "-";
     const char *cflags = "-";
+    int threads = 1;
+    const char *reorder = "none";
 
     int runs = 10;
     int warmup = 3;
@@ -611,6 +644,10 @@ int main(int argc, char **argv) {
             march = argv[++i];
         else if (!strcmp(argv[i], "--cflags") && i + 1 < argc)
             cflags = argv[++i];
+        else if (!strcmp(argv[i], "--threads") && i + 1 < argc)
+            threads = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--reorder") && i + 1 < argc)
+            reorder = argv[++i];
         else if (!strcmp(argv[i], "--cc-version") && i + 1 < argc)
             cc_version = argv[++i];
         else if (!strcmp(argv[i], "--header"))
@@ -735,6 +772,65 @@ int main(int argc, char **argv) {
         B = A;
     }
 
+    /*
+     * Reorder sits here: after load, before validation and before anything
+     * derived from A and B. intermediate_products, op_stats and the workspace
+     * query all read the matrices, so reordering later would leave the workload
+     * statistics describing the pre-reorder problem.
+     *
+     * Timed separately and reported as reorder_time_s. It is a per-invocation
+     * constant, so the same value repeats across every run row of this config.
+     */
+    double reorder_time_s = 0.0;
+    const int reorder_rcm = (strcmp(reorder, "rcm") == 0);
+
+    if (reorder_rcm) {
+        if (src != SRC_MTXSQ) {
+            fprintf(stderr,
+                    "--reorder rcm is only supported with --mtx-sq, where a "
+                    "single symmetric permutation covers both operands\n");
+            return 2;
+        }
+
+        const double r0 = now_seconds();
+
+        int32_t *perm = malloc((size_t)A.rows * sizeof(int32_t));
+        int32_t *iperm = malloc((size_t)A.rows * sizeof(int32_t));
+        int32_t *rp = NULL, *ci = NULL;
+        float *va = NULL;
+
+        if (!perm || !iperm) {
+            fprintf(stderr, "reorder permutation allocation failed\n");
+            return 1;
+        }
+
+        if (rvsp_csr_rcm_order(A.rows, A.row_ptr, A.col_idx, perm, iperm)
+                != RVSP_SUCCESS ||
+            rvsp_csr_permute(A.rows, A.row_ptr, A.col_idx,
+                             (const float *)A.values, perm, iperm,
+                             &rp, &ci, &va) != RVSP_SUCCESS) {
+            fprintf(stderr, "reorder failed\n");
+            return 1;
+        }
+
+        /* Swap the permuted arrays in and release the originals. B aliases A
+         * in the mtx-sq case, so both operands follow automatically. */
+        free_raw(&rawA);
+        rawA.row_ptr = rp;
+        rawA.col_idx = ci;
+        rawA.values = va;
+
+        A.row_ptr = rp;
+        A.col_idx = ci;
+        A.values = va;
+        B = A;
+
+        free(perm);
+        free(iperm);
+
+        reorder_time_s = now_seconds() - r0;
+    }
+
     if (rvsp_csr_validate(&A) != RVSP_SUCCESS ||
         rvsp_csr_validate(&B) != RVSP_SUCCESS) {
         fprintf(stderr, "csr validate failed (A or B malformed)\n");
@@ -768,12 +864,31 @@ int main(int argc, char **argv) {
     size_t ws_bytes = 0;
 
     {
-        rvsp_status_t bs =
-            rvsp_spgemm_buffer_size(B.cols, &ws_bytes);
+        /*
+         * Each kernel binds a different layout from this buffer, so the size
+         * query has to match the kernel. Allocating here rather than inside the
+         * kernel is what keeps allocation out of the timed region, which
+         * matters most for the OpenMP path where the accumulator scales with
+         * the thread count.
+         */
+        rvsp_status_t bs;
+
+        switch (K->ws_kind) {
+        case WS_OMP:
+            bs = rvsp_spgemm_omp_buffer_size(B.cols, threads, &ws_bytes);
+            break;
+        case WS_MAGNUS:
+            bs = rvsp_spgemm_magnus_buffer_size(B.cols, (int32_t)op_max,
+                                                &ws_bytes);
+            break;
+        default:
+            bs = rvsp_spgemm_buffer_size(B.cols, &ws_bytes);
+            break;
+        }
 
         if (bs != RVSP_SUCCESS) {
             fprintf(stderr,
-                    "rvsp_spgemm_buffer_size failed (%d) for b_cols=%d\n",
+                    "workspace size query failed (%d) for b_cols=%d\n",
                     (int)bs, B.cols);
             return 1;
         }
@@ -908,9 +1023,12 @@ int main(int argc, char **argv) {
             printf(",");
 
         if (insns >= 0)
-            printf("%lld\n", insns);
+            printf("%lld,", insns);
         else
-            printf("\n");
+            printf(",");
+
+        printf("%d,%s,%d,%.9f\n",
+               threads, reorder, RVSP_SCALAR_UNROLL, reorder_time_s);
 
         fflush(stdout);
 
