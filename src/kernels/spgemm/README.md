@@ -18,6 +18,4 @@ accum_scalar_f32.c        scalar accumulation
 accum_rvv_f32.c           gather, FMA, scatter
 accum_contig_f32.c        unit stride on contiguous runs
 accum_adaptive_f32.c      contiguous runs, gather and scalar dispatch
-
-tools/run_density.c       measures contiguous run density
 ```

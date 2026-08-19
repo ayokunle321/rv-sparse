@@ -136,7 +136,7 @@ TOOLS_OBJS := $(patsubst $(TOOLS_SRC_DIR)/%.c,$(OBJ_DIR)/tools/%.o,$(TOOLS_SRCS)
 # Test Files
 # ------------------------------------------------------------------------------
 
-TEST_SRCS := $(shell find $(TEST_DIR) -name '*.c')
+TEST_SRCS := $(wildcard $(TEST_DIR)/*.c)
 TEST_BINS := $(patsubst $(TEST_DIR)/%.c,$(BIN_DIR)/test/%,$(TEST_SRCS))
 
 # ------------------------------------------------------------------------------

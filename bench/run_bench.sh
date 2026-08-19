@@ -311,6 +311,21 @@ CC_VERSION=""
 SYNTHETIC_ONLY=0
 PRESENT_MATRICES=()
 
+# Matrix files live flat as matrices/<name>.mtx. The nested layout that
+# SuiteSparse tarballs extract to is still accepted so existing checkouts and
+# partially fetched trees keep working.
+mtx_path() {
+    local name="$1"
+
+    if [ -f "matrices/$name.mtx" ]; then
+        echo "matrices/$name.mtx"
+    elif [ -f "matrices/$name/$name.mtx" ]; then
+        echo "matrices/$name/$name.mtx"
+    else
+        return 1
+    fi
+}
+
 preflight() {
     echo ">> preflight"
 
@@ -461,7 +476,7 @@ You are most likely cross-compiling: build on the target, or use an emulator."
     local missing_m=()
 
     for name in "${MATRICES[@]}"; do
-        if [ -f "matrices/$name/$name.mtx" ]; then
+        if mtx_path "$name" >/dev/null; then
             PRESENT_MATRICES+=("$name")
         else
             missing_m+=("$name")
@@ -542,7 +557,7 @@ if [ "$CHECK_MATRICES" = "1" ]; then
     MTX_PATHS=()
 
     for name in "${PRESENT_MATRICES[@]}"; do
-        MTX_PATHS+=("matrices/$name/$name.mtx")
+        MTX_PATHS+=("$(mtx_path "$name")")
     done
 
     echo ">> checking ${#MTX_PATHS[@]} matrices"
@@ -1438,14 +1453,14 @@ else
     if [ -n "$ONLY_MTX" ]; then
         MATRIX_LIST=("$ONLY_MTX")
 
-        [ -f "matrices/$ONLY_MTX/$ONLY_MTX.mtx" ] ||
-            die "ONLY_MTX=$ONLY_MTX but matrices/$ONLY_MTX/$ONLY_MTX.mtx does not exist"
+        mtx_path "$ONLY_MTX" >/dev/null ||
+            die "ONLY_MTX=$ONLY_MTX but neither matrices/$ONLY_MTX.mtx nor matrices/$ONLY_MTX/$ONLY_MTX.mtx exists"
     else
         MATRIX_LIST=("${PRESENT_MATRICES[@]}")
     fi
 
     for name in "${MATRIX_LIST[@]}"; do
-        mtx="matrices/$name/$name.mtx"
+        mtx="$(mtx_path "$name")"
 
         mapfile -t ORDER < <(experiment_order)
 

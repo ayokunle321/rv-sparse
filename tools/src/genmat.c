@@ -1,7 +1,12 @@
 #include "genmat.h"
 
-#include <math.h>
+/* The omp pragmas below are ignored without -fopenmp, but the header only
+ * exists when the toolchain ships OpenMP. Build with OPENMP=1 to enable. */
+#ifdef _OPENMP
 #include <omp.h>
+#endif
+
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

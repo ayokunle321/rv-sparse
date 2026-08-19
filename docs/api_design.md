@@ -1,313 +1,288 @@
-# rv-sparse API Design
+# rv-sparse API Reference
 
-## Purpose
+C API for CSR SpGEMM, `C = A × B`, using FP32. Include `rv_sparse.h` and link
+against the library.
 
-The initial `rv-sparse` API provides a clean C interface for sparse matrix operations while keeping the low-level kernel implementations separated from the public interface.
+There are two ways to compute SpGEMM. `rvsp_spgemm_csr` is a simple one-shot
+interface that allocates the output. The descriptor API separates structure
+analysis from computation, so the analysis can be reused when only the values
+of A and B change.
 
-The current implementation focuses on CSR sparse matrix-matrix multiplication using a scalar FP32 baseline kernel.
+All input matrices must use canonical CSR format. This means `row_ptr[0] == 0`,
+`row_ptr` is non-decreasing, column indices are in range, sorted within each
+row, and there are no duplicate columns in a row. The compute functions assume
+these conditions and do not check them.
 
-## Current Supported Operation
+## Contents
 
-The currently implemented operation is:
+- [Types](#types)
+- [Matrix lifecycle](#matrix-lifecycle)
+- [One-shot SpGEMM](#one-shot-spgemm)
+- [Descriptor SpGEMM](#descriptor-spgemm)
+- [Status codes](#status-codes)
 
-```text
-C = A * B
-```
+## Types
 
-where `A`, `B`, and `C` are sparse matrices stored in Compressed Sparse Row (CSR) format.
+### rvsp_csr_matrix_t
 
-## Current Supported Data Type
-
-The implemented data type combination is:
-
-```text
-FP32 x FP32 -> FP32
-```
-
-This means that:
-
-* `A.values` must contain `float` values.
-* `B.values` must contain `float` values.
-* `C.values` is allocated and returned as `float` values.
-
-## Current Supported Backend
-
-The currently implemented backend is:
-
-```text
-RVSP_BACKEND_SCALAR
-```
-
-The API defines additional backend identifiers for future work, but only the scalar FP32 path is currently implemented in the dispatcher.
-
-## Architecture
-
-The library currently follows a layered architecture composed of four main components.
-
-### 1. Public API layer
-
-The public API is exposed through:
-
-```text
-include/rv_sparse.h
-include/rv_sparse_types.h
-```
-
-This layer defines the public matrix descriptors, status codes, data types, backend options, and user-facing functions.
-
-Users interact with the library through structs such as:
+A CSR matrix. `values` is a `void *` so the same structure can be used with
+different data types. For FP32 matrices it points to `float` values.
 
 ```c
-rvsp_csr_matrix_t
-rvsp_spgemm_options_t
-```
-
-### 2. Dispatch layer
-
-The dispatch layer is implemented in:
-
-```text
-src/core/spgemm.c
-```
-
-This layer selects the correct implementation according to:
-
-* selected backend
-* input data type
-* output data type
-
-Currently, the dispatcher supports the scalar FP32 CSR SpGEMM path.
-
-### 3. Internal wrapper layer
-
-The wrapper layer is implemented in:
-
-```text
-src/kernels/spgemm/csr_spgemm_wrappers.c
-```
-
-This layer connects the public API with the raw kernel implementation.
-
-The wrapper is responsible for:
-
-* validating input pointers
-* validating CSR matrices
-* checking matrix dimensions
-* checking data types
-* casting `void *values` to the correct typed pointer
-* calling the raw pointer kernel
-* filling the output `rvsp_csr_matrix_t`
-
-### 4. Raw kernel layer
-
-The raw kernel is implemented in:
-
-```text
-src/kernels/spgemm/csr_scalar_f32.c
-```
-
-This layer contains the actual computational kernel.
-
-The current raw kernel uses plain pointers and dimensions instead of public structs. This design keeps kernels simple, portable, and easier to optimize in future RISC-V implementations.
-
-## Main Public Types
-
-### `rvsp_csr_matrix_t`
-
-Represents a sparse matrix in CSR format.
-
-Main fields:
-
-```c
-int32_t rows;
-int32_t cols;
-int32_t nnz;
-
-int32_t *row_ptr;
-int32_t *col_idx;
-void    *values;
-
+int32_t  rows, cols, nnz;
+int32_t *row_ptr;   /* length rows + 1 */
+int32_t *col_idx;   /* length nnz      */
+void    *values;    /* length nnz      */
 rvsp_dtype_t dtype;
-rvsp_format_t format;
-
-int owns_data;
+int owns_data;      /* set when the library allocated the arrays */
 ```
 
-CSR layout:
+### rvsp_spgemm_algo_t
 
-```text
-row_ptr size: rows + 1
-col_idx size: nnz
-values  size: nnz
-```
-
-The `values` field is stored as `void *` so the same matrix descriptor can be reused for different data types. In the current implementation, FP32 matrices use `float *` values.
-
-### `rvsp_spgemm_options_t`
-
-Controls the backend and data type selection for SpGEMM.
+This selects the accumulation strategy used by the descriptor API.
 
 ```c
-typedef struct {
-    rvsp_backend_t backend;
-    rvsp_dtype_t input_dtype;
-    rvsp_dtype_t output_dtype;
-    int sort_output_indices;
-} rvsp_spgemm_options_t;
+RVSP_SPGEMM_ALGO_DEFAULT    scalar
+RVSP_SPGEMM_ALGO_RVV        gather and scatter
+RVSP_SPGEMM_ALGO_CONTIG     unit stride on contiguous runs
+RVSP_SPGEMM_ALGO_ADAPTIVE   selects among available strategies
 ```
 
-Current supported configuration:
+The three RVV strategies are available only in a vector build. Selecting one in
+a scalar build returns `RVSP_ERROR_UNSUPPORTED_BACKEND`.
 
-```c
-rvsp_spgemm_options_t options = {
-    .backend = RVSP_BACKEND_SCALAR,
-    .input_dtype = RVSP_DTYPE_FP32,
-    .output_dtype = RVSP_DTYPE_FP32,
-    .sort_output_indices = 1
-};
-```
+All strategies produce the same output structure. Values can differ slightly
+in the last bits because vector accumulation can change the order of additions.
 
-The current scalar FP32 implementation writes output column indices in increasing order because it scans the temporary accumulator from column `0` to `B->cols - 1`.
+## Matrix lifecycle
 
-## Public Functions
-
-### `rvsp_csr_create()`
-
-Initializes a CSR matrix descriptor.
+### rvsp_csr_create
 
 ```c
 rvsp_status_t rvsp_csr_create(
     rvsp_csr_matrix_t *A,
-    int32_t rows,
-    int32_t cols,
-    int32_t nnz,
-    int32_t *row_ptr,
-    int32_t *col_idx,
-    void *values,
-    rvsp_dtype_t dtype
-);
+    int32_t rows, int32_t cols, int32_t nnz,
+    int32_t *row_ptr, int32_t *col_idx, void *values,
+    rvsp_dtype_t dtype);
 ```
 
-This function does not allocate matrix data. It only initializes the descriptor using arrays provided by the caller.
+Initializes a matrix descriptor using arrays provided by the caller. It does
+not allocate or copy any data.
 
-### `rvsp_csr_validate()`
+`owns_data` is left unset, so `rvsp_csr_destroy` will not free these arrays.
 
-Validates the structure of a CSR matrix.
+* `A` `[out]` matrix descriptor to initialize
+* `rows`, `cols`, `nnz` `[in]` matrix dimensions
+* `row_ptr`, `col_idx`, `values` `[in]` CSR arrays owned by the caller
+* `dtype` `[in]` element type. FP32 is currently supported
+
+Returns `RVSP_SUCCESS` on success, or `RVSP_ERROR_NULL_POINTER` or
+`RVSP_ERROR_INVALID_ARGUMENT` on failure.
+
+### rvsp_csr_validate
 
 ```c
 rvsp_status_t rvsp_csr_validate(const rvsp_csr_matrix_t *A);
 ```
 
-The validation checks:
+Checks the basic structure of a CSR matrix. It checks that the arrays are not
+null, the dimensions are valid, `row_ptr[0] == 0`,
+`row_ptr[rows] == nnz`, `row_ptr` is non-decreasing, and column indices are
+in range.
 
-* non-null matrix pointer
-* non-null `row_ptr`, `col_idx`, and `values`
-* valid dimensions
-* `row_ptr[0] == 0`
-* `row_ptr[rows] == nnz`
-* non-decreasing `row_ptr`
-* column indices within matrix bounds
+It does not check whether column indices are sorted or whether a row contains
+duplicate columns.
 
-### `rvsp_csr_destroy()`
+* `A` `[in]` matrix to validate
 
-Resets a CSR matrix descriptor and frees owned memory when applicable.
+Returns `RVSP_SUCCESS` if the matrix is valid or an error status otherwise.
+
+### rvsp_csr_destroy
 
 ```c
 void rvsp_csr_destroy(rvsp_csr_matrix_t *A);
 ```
 
-Ownership behavior:
+Resets the descriptor and frees the CSR arrays when `owns_data` is set.
 
-* If `owns_data == 0`, the arrays are not freed.
-* If `owns_data == 1`, `row_ptr`, `col_idx`, and `values` are freed.
+For matrices created with `rvsp_csr_create`, the arrays are not freed. For
+matrices returned by `rvsp_spgemm_csr`, the library owns the arrays and frees
+them.
 
-Matrices created with `rvsp_csr_create()` do not own their input arrays.
+Passing NULL is allowed.
 
-Matrices returned by `rvsp_spgemm_csr()` currently own their output arrays.
+## One-shot SpGEMM
 
-### `rvsp_spgemm_csr()`
-
-Computes sparse matrix-matrix multiplication in CSR format.
+### rvsp_spgemm_csr
 
 ```c
 rvsp_status_t rvsp_spgemm_csr(
     const rvsp_csr_matrix_t *A,
     const rvsp_csr_matrix_t *B,
     rvsp_csr_matrix_t *C,
-    const rvsp_spgemm_options_t *options
-);
+    const rvsp_spgemm_options_t *options);
 ```
 
-Current supported operation:
+Computes `C = A × B` and allocates the arrays for C.
 
-```text
-CSR FP32 x CSR FP32 -> CSR FP32
-```
+The function sets `owns_data` for C, so release C with `rvsp_csr_destroy`.
 
-Current supported backend:
+* `A`, `B` `[in]` input matrices in canonical CSR format using FP32
+* `C` `[out]` output matrix allocated by the library
+* `options` `[in]` backend and data type options
 
-```text
-RVSP_BACKEND_SCALAR
-```
+The available backends are `RVSP_BACKEND_SCALAR` and
+`RVSP_BACKEND_RVV_INTRINSICS`. Both input and output data types must currently
+be FP32.
 
-If an unsupported backend or data type combination is requested, the function returns an error status.
+Returns `RVSP_SUCCESS` on success. It returns
+`RVSP_ERROR_UNSUPPORTED_BACKEND` when the requested backend or dtype is
+unavailable, or `RVSP_ERROR_INVALID_CSR` when an input matrix is not in
+canonical CSR format.
 
-## Ownership Model
+The `options` argument cannot select the CONTIG or ADAPTIVE strategies. Use the
+descriptor API for those.
 
-The current ownership model is intentionally simple.
+## Descriptor SpGEMM
 
-Input matrices:
+The descriptor API separates structure analysis from computation.
 
-* The caller owns `row_ptr`, `col_idx`, and `values`.
-* `rvsp_csr_create()` does not copy or free those arrays.
-* Input matrix descriptors have `owns_data = 0`.
+The usual sequence is to create a descriptor, select an algorithm, estimate
+the work, allocate C and the workspace, and then compute.
 
-Output matrix:
+The descriptor can be reused when the sparsity pattern of A and B stays the
+same.
 
-* `rvsp_spgemm_csr()` allocates the CSR arrays for `C`.
-* The output matrix has `owns_data = 1`.
-* The caller must release the output matrix with `rvsp_csr_destroy(&C)`.
-
-## Current Example
-
-The current public API example is located at:
-
-```text
-examples/spgemm_csr_f32.c
-```
-
-It demonstrates how to:
-
-* create CSR matrix descriptors
-* configure scalar FP32 SpGEMM options
-* call `rvsp_spgemm_csr()`
-* print the resulting CSR matrix
-* destroy matrix descriptors
-
-## Current Test
-
-The current correctness test is located at:
-
-```text
-tests/test_spgemm_csr_f32.c
-```
-
-It verifies that the scalar FP32 CSR SpGEMM implementation produces the expected CSR output.
-
-## Current Design Rule
-
-The public API should remain stable as new kernels are added.
-
-New implementations should be added internally by providing:
-
-1. a raw pointer kernel
-2. an internal wrapper
-3. a dispatcher branch
-4. an example
-5. a correctness test
-
-User code should continue to call the same public function:
+### rvsp_spgemm_descr_create
 
 ```c
-rvsp_spgemm_csr(&A, &B, &C, &options);
+rvsp_status_t rvsp_spgemm_descr_create(rvsp_spgemm_descr_t *descr);
 ```
+
+Creates a SpGEMM descriptor.
+
+* `descr` `[out]` descriptor handle
+
+### rvsp_spgemm_descr_destroy
+
+```c
+void rvsp_spgemm_descr_destroy(rvsp_spgemm_descr_t descr);
+```
+
+Destroys the descriptor and releases its internal resources.
+
+Passing NULL is allowed.
+
+### rvsp_spgemm_set_algo
+
+```c
+rvsp_status_t rvsp_spgemm_set_algo(rvsp_spgemm_descr_t descr,
+                                   rvsp_spgemm_algo_t algo);
+```
+
+Selects the accumulation strategy for the descriptor.
+
+Call this before `rvsp_spgemm_work_estimation` because the selected strategy
+is part of the analysis.
+
+* `descr` `[in]` descriptor
+* `algo` `[in]` accumulation strategy
+
+Returns `RVSP_SUCCESS` on success.
+
+It returns `RVSP_ERROR_INVALID_ARGUMENT` if called after work estimation, or
+`RVSP_ERROR_UNSUPPORTED_BACKEND` if the strategy is not available in the
+current build.
+
+### rvsp_spgemm_work_estimation
+
+```c
+rvsp_status_t rvsp_spgemm_work_estimation(rvsp_spgemm_descr_t descr,
+                                          const rvsp_csr_matrix_t *A,
+                                          const rvsp_csr_matrix_t *B,
+                                          size_t *workspace_bytes,
+                                          int32_t *c_nnz_out);
+```
+
+Analyzes A and B and determines the structure of C.
+
+Calling it again replaces the previous structure stored in the descriptor.
+
+* `descr` `[in]` descriptor
+* `A`, `B` `[in]` input matrices in canonical CSR format
+* `workspace_bytes` `[out]` workspace required by `rvsp_spgemm_compute`
+* `c_nnz_out` `[out]` exact number of nonzeros in C
+
+Returns `RVSP_SUCCESS` on success or an error status otherwise.
+
+### rvsp_spgemm_compute
+
+```c
+rvsp_status_t rvsp_spgemm_compute(rvsp_spgemm_descr_t descr,
+                                  const rvsp_csr_matrix_t *A,
+                                  const rvsp_csr_matrix_t *B,
+                                  rvsp_csr_matrix_t *C,
+                                  void *workspace);
+```
+
+Computes `C = A × B` using the structure from
+`rvsp_spgemm_work_estimation`.
+
+The caller provides storage for C. The `row_ptr`, `col_idx`, and `values`
+arrays must be large enough for `c_nnz_out` nonzeros.
+
+The caller also provides a workspace with at least `workspace_bytes` bytes.
+
+When A and B have the same sparsity pattern, repeated calls can reuse the
+previous analysis.
+
+* `descr` `[in]` descriptor with completed work estimation
+* `A`, `B` `[in]` input matrices
+* `C` `[in,out]` result matrix with caller allocated storage
+* `workspace` `[in]` scratch space
+
+Returns `RVSP_SUCCESS` on success or an error status otherwise.
+
+### rvsp_spgemm_get_op_counts
+
+```c
+rvsp_status_t rvsp_spgemm_get_op_counts(rvsp_spgemm_descr_t descr,
+                                        int64_t *op_counts_out, int32_t n);
+```
+
+Returns the number of intermediate products for each output row from the last
+work estimation.
+
+The values remain valid until the next call to
+`rvsp_spgemm_work_estimation`.
+
+* `descr` `[in]` descriptor
+* `op_counts_out` `[out]` array receiving the per-row counts
+* `n` `[in]` length of `op_counts_out`. Must be at least the number of
+  analyzed rows
+
+### rvsp_spgemm_invalidate_structure
+
+```c
+void rvsp_spgemm_invalidate_structure(rvsp_spgemm_descr_t descr);
+```
+
+Discards the cached output structure while keeping the rest of the analysis.
+
+The next call to `rvsp_spgemm_compute` will regenerate the column indices.
+
+* `descr` `[in]` descriptor
+
+## Status codes
+
+* `RVSP_SUCCESS` means the operation completed successfully
+* `RVSP_ERROR_NULL_POINTER` means a required pointer was NULL
+* `RVSP_ERROR_INVALID_ARGUMENT` means an argument was invalid or the API was
+  used in the wrong order
+* `RVSP_ERROR_UNSUPPORTED_BACKEND` means the requested backend, strategy, or
+  dtype is not available
+* `RVSP_ERROR_INVALID_CSR` means the input matrix does not satisfy the required
+  CSR format
+* `RVSP_ERROR_ALLOCATION_FAILED` means a memory allocation failed
+
+Use `rvsp_status_to_string` for a human readable description of a status code.

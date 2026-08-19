@@ -1,64 +1,72 @@
 # rv-sparse Directory Structure
 
-The project is organized using an OpenBLAS/MKL-inspired separation between the public API, core library logic, sparse formats, optimized kernels, benchmarks, examples, tests, and documentation.
+## Orientation
 
-## Proposed Layout
+`include/` is the public surface, and everything under `src/` is private. The
+private code splits in two. `src/core/` is the plumbing around a multiply, and
+`src/kernels/spgemm/` is the multiply itself. Everything outside `src/` serves
+those kernels. `bench/` measures them, `tools/` generates and loads matrices
+while `matrices/` fetches the real ones, and `tests/` and `examples/` exercise
+the public API.
+
+## Layout
 
 ```text
 rv-sparse/
-├── include/
+├── include/                      public API
 │   ├── rv_sparse.h
 │   └── rv_sparse_types.h
 │
 ├── src/
-│   ├── core/
-│   ├── formats/
-│   └── kernels/
-│       └── spgemm/
+│   ├── core/                     dispatch, matrix lifecycle, error strings
+│   │   ├── error.c
+│   │   ├── matrix.c
+│   │   ├── spgemm.c              one-shot entry point
+│   │   └── spgemm_descr.c        two phase descriptor API
+│   │
+│   └── kernels/spgemm/           current SpGEMM kernels, fp32
+│       ├── rvsp_spgemm.h         kernel and phase declarations
+│       ├── rvsp_common.h         workspace layout, compiler shims
+│       ├── rvsp_sort.h           comparator free column sort
+│       ├── rvsp_symbolic.c       symbolic phases, shared
+│       ├── rvsp_support.c        buffer size query, canonical CSR check
+│       ├── gustavson_core_f32.inc   shared driver, not compiled alone
+│       ├── accum_scalar_f32.c    accumulate strategies, one per file
+│       ├── accum_rvv_f32.c
+│       ├── accum_contig_f32.c
+│       ├── accum_adaptive_f32.c
+│       └── legacy/               pre-rework kernels, fp64 and int8
 │
-├── benchmarks/
-├── examples/
-├── tests/
-└── docs/
+├── bench/                        benchmark harness
+│   ├── experiments.tsv           the experiment table
+│   ├── run_bench.sh              driver
+│   ├── bench.c                   timing harness
+│   ├── csr_check.c               input validator
+│   ├── analyze.py                statistics
+│   ├── env.sh.example            per machine config template
+│   └── results/                  raw and summary CSVs, created on first run
+│
+├── tools/                        matrix generation and loading
+│   ├── include/
+│   └── src/                      genmat, mtx_to_csr_formatter, vec
+│
+├── tests/                        correctness tests
+├── examples/                     API usage programs
+├── matrices/                     matrix download list and fetch script
+└── docs/                         design notes and figures
 ```
 
-## Directory Roles
+Build output goes to `obj/`, `lib/` and `bin/`. All three are gitignored and safe to delete.
 
-include/
+## Notes
 
-Public C API headers exposed to users of the library.
+All four SpGEMM strategies share the Gustavson driver in
+`gustavson_core_f32.inc` and differ only in the accumulate loop, each inlining
+it after defining `RVSP_KERNEL_NAME`. The symbolic phases live in
+`rvsp_symbolic.c` and are compiled once rather than per strategy.
 
-src/core/
+A scalar build contains no vector kernel. The vector sources require the V
+extension, and the Makefile excludes them when `-march` does not enable it.
 
-Core implementation layer for validation, error handling, dispatching, and common library utilities.
-
-src/formats/
-
-Sparse matrix format utilities. CSR is the initial format.
-
-src/kernels/spgemm/
-
-Sparse GEMM kernels organized by backend and data type.
-
-Planned backends:
-
-Scalar
-GCC auto-vectorized
-Hand-written RVV intrinsics
-
-benchmarks/
-
-Performance evaluation programs.
-
-examples/
-
-Minimal programs showing how to use the public API.
-
-tests/
-
-Correctness tests.
-
-docs/
-
-Project documentation, API design notes, and timeline.
-EOF
+The Matrix Market loader in `tools/` canonicalizes on load, sorting columns and
+summing duplicate entries.
