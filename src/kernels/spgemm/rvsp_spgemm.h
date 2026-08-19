@@ -41,14 +41,6 @@ rvsp_status_t rvsp_spgemm_buffer_size(int32_t b_cols, size_t *bytes_out);
 rvsp_status_t rvsp_spgemm_omp_buffer_size(int32_t b_cols, int32_t nthreads,
                                           size_t *bytes_out);
 
-/*
- * MAGNUS bins one row's products by chunk, so its workspace depends on the
- * largest per-row intermediate product count. That is the same quantity the
- * benchmark reports as op_max.
- */
-rvsp_status_t rvsp_spgemm_magnus_buffer_size(int32_t b_cols, int32_t max_prod,
-                                             size_t *bytes_out);
-
 /* Validation. Call once, outside any timed region. */
 
 typedef enum
@@ -96,10 +88,6 @@ rvsp_status_t rvsp_spgemm_scalar_f32(RVSP_SPGEMM_PARAMS);
 rvsp_status_t rvsp_spgemm_rvv_f32(RVSP_SPGEMM_PARAMS);
 rvsp_status_t rvsp_spgemm_contig_f32(RVSP_SPGEMM_PARAMS);
 rvsp_status_t rvsp_spgemm_adaptive_f32(RVSP_SPGEMM_PARAMS);
-
-/* Chunked accumulation, single threaded. Workspace from
- * rvsp_spgemm_magnus_buffer_size. */
-rvsp_status_t rvsp_spgemm_magnus_f32(RVSP_SPGEMM_PARAMS);
 
 /* Row loop parallelised with OpenMP, one accumulator per thread. Workspace from
  * rvsp_spgemm_omp_buffer_size. Only built when OpenMP is enabled. */

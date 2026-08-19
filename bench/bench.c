@@ -25,7 +25,6 @@
 
 #include "rv_sparse.h"
 #include "rvsp_spgemm.h"
-#include "rvsp_reorder.h"
 #include "genmat.h"
 #include "mtx_to_csr_formatter.h"
 #include "vec.h"
@@ -174,7 +173,6 @@ typedef rvsp_status_t (*spgemm_fn)(
     }
 
 KERNEL_WRAP(scalar_f32_w, rvsp_spgemm_scalar_f32)
-KERNEL_WRAP(magnus_f32_w, rvsp_spgemm_magnus_f32)
 
 #if defined(_OPENMP)
 KERNEL_WRAP(scalar_omp_f32_w, rvsp_spgemm_scalar_omp_f32)
@@ -189,8 +187,7 @@ KERNEL_WRAP(adaptive_f32_w, rvsp_spgemm_adaptive_f32)
 /* Which workspace layout the kernel binds from the buffer the harness passes. */
 typedef enum {
     WS_DEFAULT = 0,   /* acc / mark / touched / scratch, sized by b_cols */
-    WS_OMP,           /* one accumulator per thread */
-    WS_MAGNUS         /* chunk accumulator, histograms, bin buffers */
+    WS_OMP            /* one accumulator per thread */
 } ws_kind_t;
 
 typedef struct {
@@ -207,8 +204,6 @@ typedef struct {
 static const kernel_entry_t KERNELS[] = {
     { "scalar_f32", scalar_f32_w, RVSP_DTYPE_FP32, "f32",
       scalar_f32_w, "scalar_f32", WS_DEFAULT },
-    { "magnus_f32", magnus_f32_w, RVSP_DTYPE_FP32, "f32",
-      scalar_f32_w, "scalar_f32", WS_MAGNUS },
 
 #if defined(_OPENMP)
     { "scalar_omp_f32", scalar_omp_f32_w, RVSP_DTYPE_FP32, "f32",
@@ -562,7 +557,7 @@ static void free_raw(raw_csr_t *raw) {
     "label,kernel,arm,build,march,cflags,cc_version,dtype," \
     "rows,cols,nnz_a,nnz_b,nnz_c,flops,op_mean,op_max,op_var," \
     "run,time_s,gops,correct,cycles,instructions," \
-    "threads,reorder,unroll,reorder_time_s"
+    "threads,unroll"
 
 static void usage(const char *prog) {
     fprintf(stderr,
@@ -606,7 +601,6 @@ int main(int argc, char **argv) {
     const char *cc_version = "-";
     const char *cflags = "-";
     int threads = 1;
-    const char *reorder = "none";
 
     int runs = 10;
     int warmup = 3;
@@ -646,8 +640,6 @@ int main(int argc, char **argv) {
             cflags = argv[++i];
         else if (!strcmp(argv[i], "--threads") && i + 1 < argc)
             threads = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--reorder") && i + 1 < argc)
-            reorder = argv[++i];
         else if (!strcmp(argv[i], "--cc-version") && i + 1 < argc)
             cc_version = argv[++i];
         else if (!strcmp(argv[i], "--header"))
@@ -772,65 +764,6 @@ int main(int argc, char **argv) {
         B = A;
     }
 
-    /*
-     * Reorder sits here: after load, before validation and before anything
-     * derived from A and B. intermediate_products, op_stats and the workspace
-     * query all read the matrices, so reordering later would leave the workload
-     * statistics describing the pre-reorder problem.
-     *
-     * Timed separately and reported as reorder_time_s. It is a per-invocation
-     * constant, so the same value repeats across every run row of this config.
-     */
-    double reorder_time_s = 0.0;
-    const int reorder_rcm = (strcmp(reorder, "rcm") == 0);
-
-    if (reorder_rcm) {
-        if (src != SRC_MTXSQ) {
-            fprintf(stderr,
-                    "--reorder rcm is only supported with --mtx-sq, where a "
-                    "single symmetric permutation covers both operands\n");
-            return 2;
-        }
-
-        const double r0 = now_seconds();
-
-        int32_t *perm = malloc((size_t)A.rows * sizeof(int32_t));
-        int32_t *iperm = malloc((size_t)A.rows * sizeof(int32_t));
-        int32_t *rp = NULL, *ci = NULL;
-        float *va = NULL;
-
-        if (!perm || !iperm) {
-            fprintf(stderr, "reorder permutation allocation failed\n");
-            return 1;
-        }
-
-        if (rvsp_csr_rcm_order(A.rows, A.row_ptr, A.col_idx, perm, iperm)
-                != RVSP_SUCCESS ||
-            rvsp_csr_permute(A.rows, A.row_ptr, A.col_idx,
-                             (const float *)A.values, perm, iperm,
-                             &rp, &ci, &va) != RVSP_SUCCESS) {
-            fprintf(stderr, "reorder failed\n");
-            return 1;
-        }
-
-        /* Swap the permuted arrays in and release the originals. B aliases A
-         * in the mtx-sq case, so both operands follow automatically. */
-        free_raw(&rawA);
-        rawA.row_ptr = rp;
-        rawA.col_idx = ci;
-        rawA.values = va;
-
-        A.row_ptr = rp;
-        A.col_idx = ci;
-        A.values = va;
-        B = A;
-
-        free(perm);
-        free(iperm);
-
-        reorder_time_s = now_seconds() - r0;
-    }
-
     if (rvsp_csr_validate(&A) != RVSP_SUCCESS ||
         rvsp_csr_validate(&B) != RVSP_SUCCESS) {
         fprintf(stderr, "csr validate failed (A or B malformed)\n");
@@ -876,10 +809,6 @@ int main(int argc, char **argv) {
         switch (K->ws_kind) {
         case WS_OMP:
             bs = rvsp_spgemm_omp_buffer_size(B.cols, threads, &ws_bytes);
-            break;
-        case WS_MAGNUS:
-            bs = rvsp_spgemm_magnus_buffer_size(B.cols, (int32_t)op_max,
-                                                &ws_bytes);
             break;
         default:
             bs = rvsp_spgemm_buffer_size(B.cols, &ws_bytes);
@@ -1027,8 +956,7 @@ int main(int argc, char **argv) {
         else
             printf(",");
 
-        printf("%d,%s,%d,%.9f\n",
-               threads, reorder, RVSP_SCALAR_UNROLL, reorder_time_s);
+        printf("%d,%d\n", threads, RVSP_SCALAR_UNROLL);
 
         fflush(stdout);
 

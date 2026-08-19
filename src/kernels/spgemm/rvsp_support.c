@@ -52,25 +52,6 @@ rvsp_spgemm_omp_buffer_size(int32_t b_cols, int32_t nthreads,
     return RVSP_SUCCESS;
 }
 
-rvsp_status_t
-rvsp_spgemm_magnus_buffer_size(int32_t b_cols, int32_t max_prod,
-                               size_t *bytes_out)
-{
-    if (bytes_out == NULL)
-    {
-        return RVSP_ERROR_NULL_POINTER;
-    }
-
-    if (b_cols <= 0 || max_prod < 0)
-    {
-        return RVSP_ERROR_INVALID_ARGUMENT;
-    }
-
-    *bytes_out = rvsp_magnus_ws_bytes(b_cols, max_prod);
-
-    return RVSP_SUCCESS;
-}
-
 rvsp_csr_status_t
 rvsp_csr_check(
     int32_t rows,

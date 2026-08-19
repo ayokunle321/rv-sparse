@@ -100,10 +100,6 @@ def load(path):
             )
             row["cc_version"] = (row.get("cc_version") or "-").strip()
 
-            row["reorder"] = (
-                (row.get("reorder") or "none").strip() or "none"
-            )
-
             try:
                 row["threads"] = int(row.get("threads") or 1)
             except ValueError:
@@ -113,8 +109,6 @@ def load(path):
                 row["unroll"] = int(row.get("unroll") or 0)
             except ValueError:
                 row["unroll"] = 0
-
-            row["reorder_time_s"] = _fnum(row, "reorder_time_s")
 
             row["cycles"] = _fnum(row, "cycles")
             row["instructions"] = _fnum(row, "instructions")
@@ -218,9 +212,9 @@ def _bootstrap_speedup_ci(base_times, kernel_times):
 
 def summarize(rows):
     # cflags must remain part of the key: different compile-time tunables are
-    # different binaries and must never be pooled together. threads, reorder
-    # and unroll are the same argument at runtime, so they join the key rather
-    # than pooling a 1-thread run with an 8-thread one.
+    # different binaries and must never be pooled together. threads and unroll
+    # are the same argument at runtime, so they join the key rather than
+    # pooling a 1-thread run with an 8-thread one.
     groups = defaultdict(list)
 
     for row in rows:
@@ -231,7 +225,6 @@ def summarize(rows):
             row["kernel"],
             row["dtype"],
             row["threads"],
-            row["reorder"],
             row["unroll"],
         )
         groups[key].append(row)
@@ -255,9 +248,7 @@ def summarize(rows):
         entry = {
             "arm": rows_in_group[0]["arm"],
             "threads": rows_in_group[0]["threads"],
-            "reorder": rows_in_group[0]["reorder"],
             "unroll": rows_in_group[0]["unroll"],
-            "reorder_time_s": rows_in_group[0]["reorder_time_s"],
             "march": rows_in_group[0]["march"],
             "cc_version": rows_in_group[0]["cc_version"],
             "runs": len(rows_in_group),
@@ -350,11 +341,11 @@ def _is_baseline(
     baseline_build=None,
 ):
     """Check whether a summary entry supplies the speedup denominator."""
-    _, build, _, kernel, _, threads, reorder, unroll = key
+    _, build, _, kernel, _, threads, unroll = key
 
-    # A parallel, reordered or unrolled run is a different experiment, never
-    # the denominator others are measured against.
-    if threads != 1 or reorder != "none" or unroll != 0:
+    # A parallel or unrolled run is a different experiment, never the
+    # denominator others are measured against.
+    if threads != 1 or unroll != 0:
         return False
 
     if baseline_kernel is not None:
@@ -480,19 +471,19 @@ def _add_thread_scaling(summary):
 
     for key, entry in summary.items():
         label, build, cflags, kernel, dtype = key[:5]
-        threads, reorder, unroll = key[5:]
+        threads, unroll = key[5:]
 
         if threads == 1:
             single[
-                (label, build, cflags, kernel, dtype, reorder, unroll)
+                (label, build, cflags, kernel, dtype, unroll)
             ] = entry["time_median"]
 
     for key, entry in summary.items():
         label, build, cflags, kernel, dtype = key[:5]
-        threads, reorder, unroll = key[5:]
+        threads, unroll = key[5:]
 
         base = single.get(
-            (label, build, cflags, kernel, dtype, reorder, unroll)
+            (label, build, cflags, kernel, dtype, unroll)
         )
 
         if not base or entry["time_median"] <= 0:
@@ -528,9 +519,6 @@ def _shape(entry):
     if entry["unroll"]:
         parts.append(f"u{entry['unroll']}")
 
-    if entry["reorder"] != "none":
-        parts.append(entry["reorder"])
-
     return "/".join(parts) if parts else "-"
 
 
@@ -551,7 +539,6 @@ def print_table(
             key[2],
             key[5],
             key[6],
-            key[7],
         ),
     )
 
@@ -663,7 +650,6 @@ def write_csv(summary, path):
             key[2],
             key[5],
             key[6],
-            key[7],
         ),
     )
 
@@ -678,7 +664,6 @@ def write_csv(summary, path):
             "cflags",
             "dtype",
             "threads",
-            "reorder",
             "unroll",
             "runs",
             "time_median_s",
@@ -700,7 +685,6 @@ def write_csv(summary, path):
             "speedup_vs_scalar_same_build",
             "speedup_vs_1thread",
             "parallel_efficiency",
-            "reorder_time_s",
             "nnz_c",
             "op_mean",
             "op_max",
@@ -749,7 +733,6 @@ def write_csv(summary, path):
                 cflags,
                 dtype,
                 entry["threads"],
-                entry["reorder"],
                 entry["unroll"],
                 entry["runs"],
                 f"{entry['time_median']:.9f}",
@@ -771,7 +754,6 @@ def write_csv(summary, path):
                 num(entry.get("speedup_same_build")),
                 num(entry.get("speedup_vs_1thread")),
                 num(entry.get("parallel_efficiency")),
-                opt(entry["reorder_time_s"], "{:.9f}"),
                 entry["nnz_c"],
                 opt(entry["op_mean"], "{:.4f}"),
                 opt(entry["op_max"], "{:.0f}"),

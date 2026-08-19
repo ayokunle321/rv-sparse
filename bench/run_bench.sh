@@ -18,8 +18,6 @@
 #   scalar_unroll  manually unrolled scalar kernel
 #   adaptive       adaptive RVV kernel
 #   omp            OpenMP scalar kernel, thread count from the threads column
-#   magnus         chunked accumulator kernel
-#   reordered      scalar kernel on an RCM-permuted matrix
 #
 # The raw CSV records arm, build, march, cflags, and compiler version so each
 # measurement is self-describing.
@@ -214,8 +212,8 @@ MATRICES=(
     webbase-1M
 )
 
-CSV_HEADER="label,kernel,arm,build,march,cflags,cc_version,dtype,rows,cols,nnz_a,nnz_b,nnz_c,flops,op_mean,op_max,op_var,run,time_s,gops,correct,cycles,instructions,threads,reorder,unroll,reorder_time_s"
-CSV_NFIELDS=27
+CSV_HEADER="label,kernel,arm,build,march,cflags,cc_version,dtype,rows,cols,nnz_a,nnz_b,nnz_c,flops,op_mean,op_max,op_var,run,time_s,gops,correct,cycles,instructions,threads,unroll"
+CSV_NFIELDS=25
 
 F_LABEL=1
 F_KERNEL=2
@@ -223,11 +221,9 @@ F_BUILD=4
 F_CFLAGS=6
 F_CORRECT=21
 F_THREADS=24
-F_REORDER=25
-F_UNROLL=26
+F_UNROLL=25
 
-VALID_ARMS="baseline autovec intrinsic scalar_unroll adaptive omp magnus reordered"
-VALID_REORDER="none rcm"
+VALID_ARMS="baseline autovec intrinsic scalar_unroll adaptive omp"
 VALID_BUILDS="gc gcv"
 VALID_DTYPES="f32 f64 i8"
 
@@ -591,7 +587,6 @@ EXP_DTYPE=()
 EXP_BUILD=()
 EXP_CFLAGS=()
 EXP_THREADS=()
-EXP_REORDER=()
 EXP_UNROLL=()
 
 POOL_ARM=()
@@ -600,7 +595,6 @@ POOL_DTYPE=()
 POOL_BUILD=()
 POOL_CFLAGS=()
 POOL_THREADS=()
-POOL_REORDER=()
 POOL_UNROLL=()
 
 ALL_KERNELS=()
@@ -628,7 +622,7 @@ load_experiments() {
 
     # Validate the whole table before filtering so malformed rows are always
     # reported rather than hidden by the current selection.
-    while IFS=$'\t' read -r arm kernel dtype build cflags threads reorder unroll; do
+    while IFS=$'\t' read -r arm kernel dtype build cflags threads unroll; do
         n=$((n + 1))
 
         [ -n "$arm" ] &&
@@ -639,13 +633,9 @@ load_experiments() {
 
         [ -n "$cflags" ] || cflags="-"
         [ -n "$threads" ] || threads=1
-        [ -n "$reorder" ] || reorder="none"
 
         is_uint "$threads" ||
             die "$EXP_FILE row $n: threads '$threads' is not a non-negative integer"
-
-        in_list "$reorder" "$VALID_REORDER" ||
-            die "$EXP_FILE row $n: reorder '$reorder' is not one of: $VALID_REORDER"
 
         # Derived, not trusted. If the table carries a value it must agree.
         derived_unroll="$(unroll_from_cflags "$cflags")"
@@ -700,7 +690,6 @@ Vector kernels require build 'gcv'."
         POOL_BUILD+=("$build")
         POOL_CFLAGS+=("$cflags")
         POOL_THREADS+=("$threads")
-        POOL_REORDER+=("$reorder")
         POOL_UNROLL+=("$unroll")
 
         kept=$((kept + 1))
@@ -756,7 +745,6 @@ arms:    $VALID_ARMS"
         EXP_BUILD+=("${POOL_BUILD[i]}")
         EXP_CFLAGS+=("${POOL_CFLAGS[i]}")
         EXP_THREADS+=("${POOL_THREADS[i]}")
-        EXP_REORDER+=("${POOL_REORDER[i]}")
         EXP_UNROLL+=("${POOL_UNROLL[i]}")
     done
 
@@ -801,7 +789,6 @@ arms:    $VALID_ARMS"
             EXP_BUILD+=("${POOL_BUILD[j]}")
             EXP_CFLAGS+=("${POOL_CFLAGS[j]}")
             EXP_THREADS+=("${POOL_THREADS[j]}")
-            EXP_REORDER+=("${POOL_REORDER[j]}")
             EXP_UNROLL+=("${POOL_UNROLL[j]}")
         done
 
@@ -1132,11 +1119,9 @@ else
             -v fk="$F_KERNEL" \
             -v fl="$F_LABEL" \
             -v fth="$F_THREADS" \
-            -v fro="$F_REORDER" \
-            -v fun="$F_UNROLL" '
+                -v fun="$F_UNROLL" '
             NR > 1 {
-                c[$fb FS $fc FS $fk FS $fl FS \
-                  $fth FS $fro FS $fun]++
+                c[$fb FS $fc FS $fk FS $fl FS $fth FS $fun]++
             }
             END {
                 n = 0
@@ -1214,14 +1199,12 @@ config_count() {
         -v b="$3" \
         -v cf="$4" \
         -v th="$5" \
-        -v ro="$6" \
-        -v un="$7" \
+        -v un="$6" \
         -v fl="$F_LABEL" \
         -v fk="$F_KERNEL" \
         -v fb="$F_BUILD" \
         -v fcf="$F_CFLAGS" \
         -v fth="$F_THREADS" \
-        -v fro="$F_REORDER" \
         -v fun="$F_UNROLL" '
         NR > 1 &&
         $fl == l &&
@@ -1229,7 +1212,6 @@ config_count() {
         $fb == b &&
         $fcf == cf &&
         $fth == th &&
-        $fro == ro &&
         $fun == un
         ' "$CSV" |
     wc -l |
@@ -1248,24 +1230,22 @@ purge_config() {
         -v b="$3" \
         -v cf="$4" \
         -v th="$5" \
-        -v ro="$6" \
-        -v un="$7" \
+        -v un="$6" \
         -v fl="$F_LABEL" \
         -v fk="$F_KERNEL" \
         -v fb="$F_BUILD" \
         -v fcf="$F_CFLAGS" \
         -v fth="$F_THREADS" \
-        -v fro="$F_REORDER" \
         -v fun="$F_UNROLL" '
         NR == 1 ||
         !($fl == l && $fk == k && $fb == b && $fcf == cf &&
-          $fth == th && $fro == ro && $fun == un)
+          $fth == th && $fun == un)
         ' "$CSV" > "$tmp" &&
         mv -f "$tmp" "$CSV"; then
         :
     else
         rm -f "$tmp"
-        die "purge failed for $1/$2/$3/$4 t$5 $6 u$7"
+        die "purge failed for $1/$2/$3/$4 t$5 u$6"
     fi
 }
 
@@ -1356,7 +1336,6 @@ run_config() {
     local b="${EXP_BUILD[ei]}"
     local cf="${EXP_CFLAGS[ei]}"
     local th="${EXP_THREADS[ei]}"
-    local ro="${EXP_REORDER[ei]}"
     local un="${EXP_UNROLL[ei]}"
 
     local tag
@@ -1369,12 +1348,11 @@ run_config() {
 
     [ "$cf" != "-" ] && desc="$k@$b[$cf]"
     [ "$th" != "1" ] && desc="$desc t$th"
-    [ "$ro" != "none" ] && desc="$desc $ro"
 
     ATTEMPTED_COUNT=$((ATTEMPTED_COUNT + 1))
 
     local have
-    have="$(config_count "$label" "$k" "$b" "$cf" "$th" "$ro" "$un")"
+    have="$(config_count "$label" "$k" "$b" "$cf" "$th" "$un")"
 
     if [ "$FORCE" != "1" ] && [ "$have" -eq "$RUNS" ]; then
         echo "   $label  $desc ($arm)  [have]"
@@ -1384,7 +1362,7 @@ run_config() {
 
     if [ "$have" -gt 0 ]; then
         echo "   $label  $desc ($arm)  [partial: $have/$RUNS present — purging and re-running clean]"
-        purge_config "$label" "$k" "$b" "$cf" "$th" "$ro" "$un"
+        purge_config "$label" "$k" "$b" "$cf" "$th" "$un"
     else
         echo "   $label  $desc ($arm)"
     fi
@@ -1417,7 +1395,6 @@ run_config() {
             --march "$march" \
             --cflags "$cf" \
             --threads "$th" \
-            --reorder "$ro" \
             --cc-version "$CC_VERSION" \
             > "$tmp" \
             2>"$tmp.err"; then
@@ -1508,24 +1485,13 @@ for case in "${GEN_CASES[@]}"; do
 
     mapfile -t ORDER < <(experiment_order)
 
-    n_skip=0
-
-    for i in "${ORDER[@]}"; do
-        [ "${EXP_REORDER[i]}" != "none" ] && n_skip=$((n_skip + 1))
-    done
-
     echo "   [$label] order: $(
         for i in "${ORDER[@]}"; do
-            [ "${EXP_REORDER[i]}" = "none" ] &&
-                printf '%s@%s ' "${EXP_KERNEL[i]}" "$(exp_tag "$i")"
+            printf '%s@%s ' "${EXP_KERNEL[i]}" "$(exp_tag "$i")"
         done
-    )$([ "$n_skip" -gt 0 ] && echo " ($n_skip reorder row(s) skipped, synthetic)")"
+    )"
 
     for i in "${ORDER[@]}"; do
-        if [ "${EXP_REORDER[i]}" != "none" ]; then
-            continue
-        fi
-
         run_config "$i" "$label" \
             --gen "$R" "$C" "$D" "$S"
     done
@@ -1575,12 +1541,12 @@ BAD_GROUPS=0
 while IFS= read -r grp; do
     [ -z "$grp" ] && continue
 
-    IFS=$'\t' read -r lbl kern bld cfl th ro un <<< "$grp"
+    IFS=$'\t' read -r lbl kern bld cfl th un <<< "$grp"
 
-    n="$(config_count "$lbl" "$kern" "$bld" "$cfl" "$th" "$ro" "$un")"
+    n="$(config_count "$lbl" "$kern" "$bld" "$cfl" "$th" "$un")"
 
     if [ "$n" -ne "$RUNS" ]; then
-        echo "   !! $lbl / $kern@$bld[$cfl] t$th $ro u$un has $n/$RUNS rows (not exactly RUNS)"
+        echo "   !! $lbl / $kern@$bld[$cfl] t$th u$un has $n/$RUNS rows (not exactly RUNS)"
         BAD_GROUPS=$((BAD_GROUPS + 1))
     fi
 
@@ -1591,11 +1557,9 @@ done < <(
         -v fb="$F_BUILD" \
         -v fcf="$F_CFLAGS" \
         -v fth="$F_THREADS" \
-        -v fro="$F_REORDER" \
         -v fun="$F_UNROLL" '
         NR > 1 {
-            print $fl "\t" $fk "\t" $fb "\t" $fcf "\t" \
-                  $fth "\t" $fro "\t" $fun
+            print $fl "\t" $fk "\t" $fb "\t" $fcf "\t" $fth "\t" $fun
         }
         ' "$CSV" |
     sort -u
