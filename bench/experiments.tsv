@@ -1,11 +1,12 @@
 # bench/experiments.tsv -- experiment configurations.
 #
 # Columns:
-# arm     baseline | autovec | intrinsic | scalar_unroll | adaptive
+# arm     baseline | autovec | intrinsic | adaptive | omp
 # kernel  --kernel name from bench.c
 # dtype   f32 | f64 | i8
 # build   gc | gcv
 # cflags  extra compile flags, or -
+# threads OpenMP thread count, 1 for serial kernels
 #
 # build:
 #   gc  = rv64gc
@@ -23,15 +24,13 @@
 #   contig vs adaptive    gather dispatch
 #   rvv vs adaptive       dispatch vs always-gather
 
-arm	kernel	dtype	build	cflags	threads	unroll
-baseline	scalar_f32	f32	gc	-	1	0
-autovec	scalar_f32	f32	gcv	-	1	0
-intrinsic	rvv_f32	f32	gcv	-	1	0
-intrinsic	contig_f32	f32	gcv	-	1	0
-adaptive	adaptive_f32	f32	gcv	-	1	0
-scalar_unroll	scalar_f32	f32	gcv	-DRVSP_SCALAR_UNROLL=4	1	4
-scalar_unroll	scalar_f32	f32	gcv	-DRVSP_SCALAR_UNROLL=8	1	8
-omp	scalar_omp_f32	f32	gc	-fopenmp	1	0
-omp	scalar_omp_f32	f32	gc	-fopenmp	2	0
-omp	scalar_omp_f32	f32	gc	-fopenmp	4	0
-omp	scalar_omp_f32	f32	gc	-fopenmp	8	0
+arm	kernel	dtype	build	cflags	threads
+baseline	scalar_f32	f32	gc	-	1
+autovec	scalar_f32	f32	gcv	-	1
+intrinsic	rvv_f32	f32	gcv	-	1
+intrinsic	contig_f32	f32	gcv	-	1
+adaptive	adaptive_f32	f32	gcv	-	1
+omp	scalar_omp_f32	f32	gc	-fopenmp	1
+omp	scalar_omp_f32	f32	gc	-fopenmp	2
+omp	scalar_omp_f32	f32	gc	-fopenmp	4
+omp	scalar_omp_f32	f32	gc	-fopenmp	8

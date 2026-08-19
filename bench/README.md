@@ -81,7 +81,7 @@ single tabs, and the driver rejects rows that do not.
 
 | Column   | Meaning                                                                                             |
 | -------- | --------------------------------------------------------------------------------------------------- |
-| `arm`    | what the row is testing, such as `baseline`, `autovec`, `intrinsic`, `scalar_unroll`, or `adaptive` |
+| `arm`    | what the row is testing, such as `baseline`, `autovec`, `intrinsic`, `adaptive`, or `omp` |
 | `kernel` | must match a name in `KERNELS[]` in `bench.c`                                                       |
 | `dtype`  | `f32`, `f64`, or `i8`                                                                               |
 | `build`  | `gc` or `gcv`, mapped to march flags in `build_march()`                                             |

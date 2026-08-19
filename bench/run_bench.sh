@@ -15,7 +15,6 @@
 #   baseline       scalar source, rv64gc
 #   autovec        same scalar source, rv64gcv
 #   intrinsic      handwritten RVV kernel
-#   scalar_unroll  manually unrolled scalar kernel
 #   adaptive       adaptive RVV kernel
 #   omp            OpenMP scalar kernel, thread count from the threads column
 #
@@ -212,8 +211,8 @@ MATRICES=(
     webbase-1M
 )
 
-CSV_HEADER="label,kernel,arm,build,march,cflags,cc_version,dtype,rows,cols,nnz_a,nnz_b,nnz_c,flops,op_mean,op_max,op_var,run,time_s,gops,correct,cycles,instructions,threads,unroll"
-CSV_NFIELDS=25
+CSV_HEADER="label,kernel,arm,build,march,cflags,cc_version,dtype,rows,cols,nnz_a,nnz_b,nnz_c,flops,op_mean,op_max,op_var,run,time_s,gops,correct,cycles,instructions,threads"
+CSV_NFIELDS=24
 
 F_LABEL=1
 F_KERNEL=2
@@ -221,9 +220,8 @@ F_BUILD=4
 F_CFLAGS=6
 F_CORRECT=21
 F_THREADS=24
-F_UNROLL=25
 
-VALID_ARMS="baseline autovec intrinsic scalar_unroll adaptive omp"
+VALID_ARMS="baseline autovec intrinsic adaptive omp"
 VALID_BUILDS="gc gcv"
 VALID_DTYPES="f32 f64 i8"
 
@@ -248,18 +246,6 @@ cflags_slug() {
             tr -cs 'A-Za-z0-9' '_' |
             sed 's/^_//; s/_$//'
     fi
-}
-
-# The unroll width is a compile-time macro, so it is read back out of the
-# cflags string rather than taken from a hand-typed column. One source of truth,
-# so the table and the binary cannot disagree.
-unroll_from_cflags() {
-    case "$1" in
-        *-DRVSP_SCALAR_UNROLL=8*) echo 8 ;;
-        *-DRVSP_SCALAR_UNROLL=4*) echo 4 ;;
-        *-DRVSP_SCALAR_UNROLL=0*) echo 0 ;;
-        *) echo 0 ;;
-    esac
 }
 
 FREQ_DRIFT_WARN=0.01
@@ -325,6 +311,16 @@ fi
 CC_VERSION=""
 SYNTHETIC_ONLY=0
 PRESENT_MATRICES=()
+
+# Matrix files live flat as matrices/<name>.mtx, which is what
+# getResources.sh produces.
+mtx_path() {
+    local name="$1"
+
+    [ -f "matrices/$name.mtx" ] || return 1
+
+    echo "matrices/$name.mtx"
+}
 
 preflight() {
     echo ">> preflight"
@@ -476,7 +472,7 @@ You are most likely cross-compiling: build on the target, or use an emulator."
     local missing_m=()
 
     for name in "${MATRICES[@]}"; do
-        if [ -f "matrices/$name/$name.mtx" ]; then
+        if mtx_path "$name" >/dev/null; then
             PRESENT_MATRICES+=("$name")
         else
             missing_m+=("$name")
@@ -557,7 +553,7 @@ if [ "$CHECK_MATRICES" = "1" ]; then
     MTX_PATHS=()
 
     for name in "${PRESENT_MATRICES[@]}"; do
-        MTX_PATHS+=("matrices/$name/$name.mtx")
+        MTX_PATHS+=("$(mtx_path "$name")")
     done
 
     echo ">> checking ${#MTX_PATHS[@]} matrices"
@@ -587,7 +583,6 @@ EXP_DTYPE=()
 EXP_BUILD=()
 EXP_CFLAGS=()
 EXP_THREADS=()
-EXP_UNROLL=()
 
 POOL_ARM=()
 POOL_KERNEL=()
@@ -595,7 +590,6 @@ POOL_DTYPE=()
 POOL_BUILD=()
 POOL_CFLAGS=()
 POOL_THREADS=()
-POOL_UNROLL=()
 
 ALL_KERNELS=()
 
@@ -622,7 +616,7 @@ load_experiments() {
 
     # Validate the whole table before filtering so malformed rows are always
     # reported rather than hidden by the current selection.
-    while IFS=$'\t' read -r arm kernel dtype build cflags threads unroll; do
+    while IFS=$'\t' read -r arm kernel dtype build cflags threads; do
         n=$((n + 1))
 
         [ -n "$arm" ] &&
@@ -636,17 +630,6 @@ load_experiments() {
 
         is_uint "$threads" ||
             die "$EXP_FILE row $n: threads '$threads' is not a non-negative integer"
-
-        # Derived, not trusted. If the table carries a value it must agree.
-        derived_unroll="$(unroll_from_cflags "$cflags")"
-
-        if [ -n "$unroll" ] && [ "$unroll" != "$derived_unroll" ]; then
-            die "$EXP_FILE row $n: unroll column says '$unroll' but cflags '$cflags' implies $derived_unroll.
-The unroll width is a compile-time macro; set it in cflags and leave the column
-matching, or omit the column."
-        fi
-
-        unroll="$derived_unroll"
 
         case "$cflags" in
             *,*)
@@ -690,7 +673,6 @@ Vector kernels require build 'gcv'."
         POOL_BUILD+=("$build")
         POOL_CFLAGS+=("$cflags")
         POOL_THREADS+=("$threads")
-        POOL_UNROLL+=("$unroll")
 
         kept=$((kept + 1))
 
@@ -745,7 +727,6 @@ arms:    $VALID_ARMS"
         EXP_BUILD+=("${POOL_BUILD[i]}")
         EXP_CFLAGS+=("${POOL_CFLAGS[i]}")
         EXP_THREADS+=("${POOL_THREADS[i]}")
-        EXP_UNROLL+=("${POOL_UNROLL[i]}")
     done
 
     [ "${#EXP_ARM[@]}" -gt 0 ] ||
@@ -789,7 +770,6 @@ arms:    $VALID_ARMS"
             EXP_BUILD+=("${POOL_BUILD[j]}")
             EXP_CFLAGS+=("${POOL_CFLAGS[j]}")
             EXP_THREADS+=("${POOL_THREADS[j]}")
-            EXP_UNROLL+=("${POOL_UNROLL[j]}")
         done
 
         echo ">> baseline '$BASELINE_KERNEL' was not in --kernels; added ${#add[@]} row(s) for it."
@@ -1118,10 +1098,9 @@ else
             -v fc="$F_CFLAGS" \
             -v fk="$F_KERNEL" \
             -v fl="$F_LABEL" \
-            -v fth="$F_THREADS" \
-                -v fun="$F_UNROLL" '
+            -v fth="$F_THREADS" '
             NR > 1 {
-                c[$fb FS $fc FS $fk FS $fl FS $fth FS $fun]++
+                c[$fb FS $fc FS $fk FS $fl FS $fth]++
             }
             END {
                 n = 0
@@ -1199,20 +1178,17 @@ config_count() {
         -v b="$3" \
         -v cf="$4" \
         -v th="$5" \
-        -v un="$6" \
         -v fl="$F_LABEL" \
         -v fk="$F_KERNEL" \
         -v fb="$F_BUILD" \
         -v fcf="$F_CFLAGS" \
-        -v fth="$F_THREADS" \
-        -v fun="$F_UNROLL" '
+        -v fth="$F_THREADS" '
         NR > 1 &&
         $fl == l &&
         $fk == k &&
         $fb == b &&
         $fcf == cf &&
-        $fth == th &&
-        $fun == un
+        $fth == th
         ' "$CSV" |
     wc -l |
     tr -d ' '
@@ -1230,22 +1206,19 @@ purge_config() {
         -v b="$3" \
         -v cf="$4" \
         -v th="$5" \
-        -v un="$6" \
         -v fl="$F_LABEL" \
         -v fk="$F_KERNEL" \
         -v fb="$F_BUILD" \
         -v fcf="$F_CFLAGS" \
-        -v fth="$F_THREADS" \
-        -v fun="$F_UNROLL" '
+        -v fth="$F_THREADS" '
         NR == 1 ||
-        !($fl == l && $fk == k && $fb == b && $fcf == cf &&
-          $fth == th && $fun == un)
+        !($fl == l && $fk == k && $fb == b && $fcf == cf && $fth == th)
         ' "$CSV" > "$tmp" &&
         mv -f "$tmp" "$CSV"; then
         :
     else
         rm -f "$tmp"
-        die "purge failed for $1/$2/$3/$4 t$5 u$6"
+        die "purge failed for $1/$2/$3/$4 t$5"
     fi
 }
 
@@ -1336,7 +1309,6 @@ run_config() {
     local b="${EXP_BUILD[ei]}"
     local cf="${EXP_CFLAGS[ei]}"
     local th="${EXP_THREADS[ei]}"
-    local un="${EXP_UNROLL[ei]}"
 
     local tag
     tag="$(exp_tag "$ei")"
@@ -1352,7 +1324,7 @@ run_config() {
     ATTEMPTED_COUNT=$((ATTEMPTED_COUNT + 1))
 
     local have
-    have="$(config_count "$label" "$k" "$b" "$cf" "$th" "$un")"
+    have="$(config_count "$label" "$k" "$b" "$cf" "$th")"
 
     if [ "$FORCE" != "1" ] && [ "$have" -eq "$RUNS" ]; then
         echo "   $label  $desc ($arm)  [have]"
@@ -1362,7 +1334,7 @@ run_config() {
 
     if [ "$have" -gt 0 ]; then
         echo "   $label  $desc ($arm)  [partial: $have/$RUNS present — purging and re-running clean]"
-        purge_config "$label" "$k" "$b" "$cf" "$th" "$un"
+        purge_config "$label" "$k" "$b" "$cf" "$th"
     else
         echo "   $label  $desc ($arm)"
     fi
@@ -1505,14 +1477,14 @@ else
     if [ -n "$ONLY_MTX" ]; then
         MATRIX_LIST=("$ONLY_MTX")
 
-        [ -f "matrices/$ONLY_MTX/$ONLY_MTX.mtx" ] ||
-            die "ONLY_MTX=$ONLY_MTX but matrices/$ONLY_MTX/$ONLY_MTX.mtx does not exist"
+        mtx_path "$ONLY_MTX" >/dev/null ||
+            die "ONLY_MTX=$ONLY_MTX but matrices/$ONLY_MTX.mtx does not exist"
     else
         MATRIX_LIST=("${PRESENT_MATRICES[@]}")
     fi
 
     for name in "${MATRIX_LIST[@]}"; do
-        mtx="matrices/$name/$name.mtx"
+        mtx="$(mtx_path "$name")"
 
         mapfile -t ORDER < <(experiment_order)
 
@@ -1541,12 +1513,12 @@ BAD_GROUPS=0
 while IFS= read -r grp; do
     [ -z "$grp" ] && continue
 
-    IFS=$'\t' read -r lbl kern bld cfl th un <<< "$grp"
+    IFS=$'\t' read -r lbl kern bld cfl th <<< "$grp"
 
-    n="$(config_count "$lbl" "$kern" "$bld" "$cfl" "$th" "$un")"
+    n="$(config_count "$lbl" "$kern" "$bld" "$cfl" "$th")"
 
     if [ "$n" -ne "$RUNS" ]; then
-        echo "   !! $lbl / $kern@$bld[$cfl] t$th u$un has $n/$RUNS rows (not exactly RUNS)"
+        echo "   !! $lbl / $kern@$bld[$cfl] t$th has $n/$RUNS rows (not exactly RUNS)"
         BAD_GROUPS=$((BAD_GROUPS + 1))
     fi
 
@@ -1556,10 +1528,9 @@ done < <(
         -v fk="$F_KERNEL" \
         -v fb="$F_BUILD" \
         -v fcf="$F_CFLAGS" \
-        -v fth="$F_THREADS" \
-        -v fun="$F_UNROLL" '
+        -v fth="$F_THREADS" '
         NR > 1 {
-            print $fl "\t" $fk "\t" $fb "\t" $fcf "\t" $fth "\t" $fun
+            print $fl "\t" $fk "\t" $fb "\t" $fcf "\t" $fth
         }
         ' "$CSV" |
     sort -u

@@ -61,9 +61,6 @@ def _infer_arm(kernel):
     """Best-effort arm for legacy CSVs without an arm column."""
     if kernel.startswith("rvv_"):
         return "intrinsic"
-    if kernel.startswith("unroll4_"):
-        return "scalar_unroll"
-
     # scalar_* is ambiguous without build information: the same source can
     # be either the gc baseline or the gcv autovec arm.
     return "-"
@@ -104,11 +101,6 @@ def load(path):
                 row["threads"] = int(row.get("threads") or 1)
             except ValueError:
                 row["threads"] = 1
-
-            try:
-                row["unroll"] = int(row.get("unroll") or 0)
-            except ValueError:
-                row["unroll"] = 0
 
             row["cycles"] = _fnum(row, "cycles")
             row["instructions"] = _fnum(row, "instructions")
@@ -212,9 +204,9 @@ def _bootstrap_speedup_ci(base_times, kernel_times):
 
 def summarize(rows):
     # cflags must remain part of the key: different compile-time tunables are
-    # different binaries and must never be pooled together. threads and unroll
-    # are the same argument at runtime, so they join the key rather than
-    # pooling a 1-thread run with an 8-thread one.
+    # different binaries and must never be pooled together. threads is the same
+    # argument at runtime, so it joins the key rather than pooling a 1-thread
+    # run with an 8-thread one.
     groups = defaultdict(list)
 
     for row in rows:
@@ -225,7 +217,6 @@ def summarize(rows):
             row["kernel"],
             row["dtype"],
             row["threads"],
-            row["unroll"],
         )
         groups[key].append(row)
 
@@ -248,7 +239,6 @@ def summarize(rows):
         entry = {
             "arm": rows_in_group[0]["arm"],
             "threads": rows_in_group[0]["threads"],
-            "unroll": rows_in_group[0]["unroll"],
             "march": rows_in_group[0]["march"],
             "cc_version": rows_in_group[0]["cc_version"],
             "runs": len(rows_in_group),
@@ -341,11 +331,11 @@ def _is_baseline(
     baseline_build=None,
 ):
     """Check whether a summary entry supplies the speedup denominator."""
-    _, build, _, kernel, _, threads, unroll = key
+    _, build, _, kernel, _, threads = key
 
-    # A parallel or unrolled run is a different experiment, never the
-    # denominator others are measured against.
-    if threads != 1 or unroll != 0:
+    # A parallel run is a different experiment, never the denominator others
+    # are measured against.
+    if threads != 1:
         return False
 
     if baseline_kernel is not None:
@@ -471,19 +461,19 @@ def _add_thread_scaling(summary):
 
     for key, entry in summary.items():
         label, build, cflags, kernel, dtype = key[:5]
-        threads, unroll = key[5:]
+        threads = key[5]
 
         if threads == 1:
             single[
-                (label, build, cflags, kernel, dtype, unroll)
+                (label, build, cflags, kernel, dtype)
             ] = entry["time_median"]
 
     for key, entry in summary.items():
         label, build, cflags, kernel, dtype = key[:5]
-        threads, unroll = key[5:]
+        threads = key[5]
 
         base = single.get(
-            (label, build, cflags, kernel, dtype, unroll)
+            (label, build, cflags, kernel, dtype)
         )
 
         if not base or entry["time_median"] <= 0:
@@ -516,9 +506,6 @@ def _shape(entry):
     if entry["threads"] != 1:
         parts.append(f"t{entry['threads']}")
 
-    if entry["unroll"]:
-        parts.append(f"u{entry['unroll']}")
-
     return "/".join(parts) if parts else "-"
 
 
@@ -538,7 +525,6 @@ def print_table(
             key[3],
             key[2],
             key[5],
-            key[6],
         ),
     )
 
@@ -649,7 +635,6 @@ def write_csv(summary, path):
             key[3],
             key[2],
             key[5],
-            key[6],
         ),
     )
 
@@ -664,7 +649,6 @@ def write_csv(summary, path):
             "cflags",
             "dtype",
             "threads",
-            "unroll",
             "runs",
             "time_median_s",
             "time_mean_s",
@@ -733,7 +717,6 @@ def write_csv(summary, path):
                 cflags,
                 dtype,
                 entry["threads"],
-                entry["unroll"],
                 entry["runs"],
                 f"{entry['time_median']:.9f}",
                 f"{entry['time_mean']:.9f}",

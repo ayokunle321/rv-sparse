@@ -37,15 +37,6 @@
 #include <math.h>
 
 /*
- * Mirrors the kernel default. run_bench.sh passes the same cflags to the
- * library and to this file, so the value recorded in the CSV is the value the
- * kernel was built with.
- */
-#ifndef RVSP_SCALAR_UNROLL
-#define RVSP_SCALAR_UNROLL 0
-#endif
-
-/*
  * Optional hardware counters. When enabled, counters cover only the
  * kernel call and are left blank when unavailable.
  */
@@ -557,7 +548,7 @@ static void free_raw(raw_csr_t *raw) {
     "label,kernel,arm,build,march,cflags,cc_version,dtype," \
     "rows,cols,nnz_a,nnz_b,nnz_c,flops,op_mean,op_max,op_var," \
     "run,time_s,gops,correct,cycles,instructions," \
-    "threads,unroll"
+    "threads"
 
 static void usage(const char *prog) {
     fprintf(stderr,
@@ -566,7 +557,7 @@ static void usage(const char *prog) {
         "          [--runs N] [--warmup W] [--label TAG] [--header]\n"
         "          [--arm ARM] [--build TAG] [--march FLAGS] [--cflags FLAGS]\n"
         "          [--cc-version VER]\n"
-        "arms:    baseline autovec intrinsic scalar_unroll adaptive\n"
+        "arms:    baseline autovec intrinsic adaptive omp\n"
         "kernels:\n",
         prog);
 
@@ -956,7 +947,7 @@ int main(int argc, char **argv) {
         else
             printf(",");
 
-        printf("%d,%d\n", threads, RVSP_SCALAR_UNROLL);
+        printf("%d\n", threads);
 
         fflush(stdout);
 
