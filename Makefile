@@ -21,6 +21,7 @@ TARGET_ARCH ?= native
 BUILD_TYPE  ?= release
 
 OPENMP   ?= 0
+LTO      ?= 1
 VALGRIND ?= 0
 
 # ------------------------------------------------------------------------------
@@ -79,9 +80,14 @@ ifeq ($(BUILD_TYPE), debug)
     CFLAGS += -g -O0 -DDEBUG
     $(info ---> Build Type: DEBUG)
 else
-    CFLAGS += -O3 -flto
-    LDFLAGS += -flto
+    CFLAGS += -O3
     $(info ---> Build Type: RELEASE)
+ifeq ($(LTO),1)
+    CFLAGS += -flto
+    LDFLAGS += -flto
+else
+    $(info ---> LTO disabled)
+endif
 endif
 
 ifeq ($(OPENMP),1)

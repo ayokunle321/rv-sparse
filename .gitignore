@@ -14,6 +14,10 @@ lib/
 
 # Data
 bench/results
+bench2/results
+bench2/env.sh
+bench2/bench_*
+bench2/csr_check
 
 # Debug / profiling
 *.dSYM/

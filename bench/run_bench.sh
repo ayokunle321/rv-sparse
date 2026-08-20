@@ -681,7 +681,7 @@ Vector kernels require build 'gcv'."
             /^[[:space:]]*#/ { next }
             /^[[:space:]]*$/ { next }
             $1 == "arm" && $2 == "kernel" { next }
-            { print $1 "\t" $2 "\t" $3 "\t" $4 "\t" $5 }
+            { print $1 "\t" $2 "\t" $3 "\t" $4 "\t" $5 "\t" $6 }
         ' "$EXP_FILE"
     )
 
