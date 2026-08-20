@@ -312,8 +312,6 @@ CC_VERSION=""
 SYNTHETIC_ONLY=0
 PRESENT_MATRICES=()
 
-# Matrix files live flat as matrices/<name>.mtx, which is what
-# getResources.sh produces.
 mtx_path() {
     local name="$1"
 

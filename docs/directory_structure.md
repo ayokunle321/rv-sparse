@@ -1,5 +1,14 @@
 # rv-sparse Directory Structure
 
+## Orientation
+
+`include/` is the public surface, and everything under `src/` is private. The
+private code splits in two. `src/core/` is the plumbing around a multiply, and
+`src/kernels/spgemm/` is the multiply itself. Everything outside `src/` serves
+those kernels. `bench/` measures them, `tools/` generates and loads matrices
+while `matrices/` fetches the real ones, and `tests/` and `examples/` exercise
+the public API.
+
 ## Layout
 
 ```text
@@ -52,14 +61,12 @@ Build output goes to `obj/`, `lib/` and `bin/`. All three are gitignored and saf
 ## Notes
 
 All four SpGEMM strategies share the Gustavson driver in
-`gustavson_core_f32.inc` and differ only in the accumulate loop. Each one
-inlines the driver after defining `RVSP_KERNEL_NAME`. The symbolic phases are
-in `rvsp_symbolic.c` and compiled once, not per strategy.
+`gustavson_core_f32.inc` and differ only in the accumulate loop, each inlining
+it after defining `RVSP_KERNEL_NAME`. The symbolic phases live in
+`rvsp_symbolic.c` and are compiled once rather than per strategy.
 
-The vector kernels `#error` without the V extension. The Makefile excludes them
-by path when `-march` does not enable V, so a scalar build has no vector kernel
-in it.
+A scalar build contains no vector kernel. The vector sources require the V
+extension, and the Makefile excludes them when `-march` does not enable it.
 
-The Matrix Market loader in `tools/` canonicalizes on load: it sorts columns and
-sums duplicate entries. `tests/` and `examples/` are discovered by the Makefile,
-so a new file in either is picked up with no build change.
+The Matrix Market loader in `tools/` canonicalizes on load, sorting columns and
+summing duplicate entries.

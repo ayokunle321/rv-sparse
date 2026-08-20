@@ -1,83 +1,67 @@
-# rv-sparse benchmark harness
+# Benchmark harness
 
-Times the SpGEMM kernels on one core, checks every result against a reference
-kernel, and writes self-describing rows to a CSV.
+Times each SpGEMM kernel against a reference, checks every result, and appends
+one row per run to a CSV.
 
-## Setup
+## Running a sweep
 
-Set `CC` to a compiler that can build and run `-march=rv64gcv` programs on the
-machine. Then run the preflight check.
+Set `CC` to a compiler that can build and run `-march=rv64gcv`, then run the
+preflight. It builds a small vector program to confirm the toolchain and warns
+about anything that would make small effects unreliable.
 
 ```bash
-cp bench/env.sh.example bench/env.sh
-$EDITOR bench/env.sh
+cp bench/env.sh.example bench/env.sh   # then set CC
 bash bench/run_bench.sh --check
 ```
 
-`--check` builds and runs a small vector program to verify the toolchain,
-derives runtime library paths from `CC`, and warns about conditions that can
-make small effects unreliable, such as an unpinned cpufreq governor. It does
-not run any benchmarks. `bench/env.sh` is per machine and gitignored.
-
-## Running
+Fetch the matrices.
 
 ```bash
-bash bench/run_bench.sh                        # the whole table
+cd matrices && bash getResources.sh && cd ..
+```
+
+The full sweep takes hours, so run it in a detachable session. If it stops, run
+the same command again and completed configs are skipped.
+
+```bash
+mkdir -p bench/results
+tmux new -s bench
+bash bench/run_bench.sh 2>&1 | tee -a bench/results/run.log
+```
+
+Then summarise:
+
+```bash
+python3 bench/analyze.py bench/results/spgemm_raw.csv --csv-out bench/results/summary.csv
+```
+
+`spgemm_raw.csv` holds one row per timed run and is only ever appended to.
+`summary.csv` holds one row per config, with medians and confidence intervals.
+
+## Narrowing the run
+
+The whole table runs by default. To run less:
+
+```bash
 bash bench/run_bench.sh --kernels contig_f32   # one kernel and its baseline
 bash bench/run_bench.sh --kernels intrinsic    # every row with that arm
 bash bench/run_bench.sh --dtype f32 --runs 30
 ```
 
-| Flag                 | Meaning                                                       |
-| -------------------- | ------------------------------------------------------------- |
-| `--check`            | preflight only                                                |
-| `--check-matrices`   | verify canonical CSR over the matrix set, then exit           |
-| `--dtype f32`        | restrict by dtype, repeatable or comma-separated              |
-| `--kernels a,b`      | restrict by kernel name or arm                                |
-| `--baseline NAME`    | kernel used for the speedup denominator, default `scalar_f32` |
-| `--runs N`           | timed runs per config, default 10                             |
-| `--experiments PATH` | use an alternate experiment table                             |
+| Flag | Meaning |
+| --- | --- |
+| `--check` | preflight only |
+| `--check-matrices` | verify canonical CSR over the matrix set, then exit |
+| `--dtype` | restrict by dtype |
+| `--kernels` | restrict by kernel name or arm |
+| `--baseline NAME` | speedup denominator, default `scalar_f32` |
+| `--runs N` | timed runs per config, default 10 |
+| `--experiments PATH` | alternate experiment table |
 
-Runs are resumable. A config counts as complete only when it has exactly
-`RUNS` rows. Partial groups are removed and run again instead of being topped
-up, so interrupting a sweep is safe.
-
-When `--kernels` is used, the baseline stays in the batch so that speedups can
-still be calculated.
-
-## Analysis
-
-```bash
-python3 bench/analyze.py bench/results/spgemm_raw.csv
-```
-
-The analysis groups results by matrix, build, cflags, kernel, and dtype. It
-reports median, mean, spread, GOP/s, and speedup with a bootstrap 95% confidence
-interval. Configurations whose interval includes 1.0 are marked as not
-significant.
-
-The speedup denominator is the `arm=baseline` group for the same dtype and
-matrix from the `gc` build. This is intentional. `autovec` uses the same scalar
-source with the vector extension enabled, so comparing it with the scalar
-kernel from its own build would compare it against itself.
-
-Use `--baseline NAME` to score against a different kernel. This only re-reads
-the CSV and does not run the benchmarks again.
-
-## The experiment table
-
-`bench/experiments.tsv` is the only place where experiments are declared. It is
-tab separated with one row per cell in the sweep.
-
-```text
-arm       kernel        dtype  build  cflags
-baseline  scalar_f32    f32    gc     -
-autovec   scalar_f32    f32    gcv    -
-intrinsic rvv_f32       f32    gcv    -
-```
-
-The columns are space-aligned above for readability. The actual file uses
-single tabs, and the driver rejects rows that do not.
+Runs resume safely. A config counts as done only at exactly `RUNS` rows, and a
+partial group is rerun rather than topped up, so interrupting a sweep is fine.
+Narrowing with `--kernels` keeps the baseline in the batch so speedups can still
+be computed.
 
 | Column   | Meaning                                                                                             |
 | -------- | --------------------------------------------------------------------------------------------------- |
@@ -85,71 +69,71 @@ single tabs, and the driver rejects rows that do not.
 | `kernel` | must match a name in `KERNELS[]` in `bench.c`                                                       |
 | `dtype`  | `f32`, `f64`, or `i8`                                                                               |
 | `build`  | `gc` or `gcv`, mapped to march flags in `build_march()`                                             |
-| `cflags` | extra compile flags for the cell, or `-`                                                            |
+| `cflags` | extra compile flags for the cell, or `-` 
+                                                           |
+## Analysis
 
-An arm describes both a compilation and a kernel. For example, the first two
-rows use the same kernel but different builds.
+`analyze.py` groups by matrix, build, cflags, kernel, and dtype, and reports
+median, spread, GOP/s, and a speedup with a bootstrap 95% confidence interval. A
+config whose interval includes 1.0 is flagged not significant.
 
-The tunables are compile-time macros, so a `cflags` sweep produces a different
-binary. The driver builds one library and one benchmark binary for each unique
-`(build, cflags)` pair.
+The speedup denominator is the `baseline` arm at the `gc` build for the same
+matrix. This is cross-build on purpose. `autovec` is the scalar source compiled
+with the vector extension on, so scoring it against its own build would compare
+it to itself. `--baseline NAME` re-scores against a different kernel without
+rerunning anything.
 
-A vector kernel paired with `build=gc` is rejected before the build since it
-would not link.
+## The experiment table
 
-## Adding a kernel to the evaluation
+`experiments.tsv` is the only place experiments are declared, one tab-separated
+row per cell of the sweep.
 
-Build the kernel first. See
-[CONTRIBUTING.md](../CONTRIBUTING.md) for how to add a strategy.
+```text
+arm        kernel       dtype  build  cflags
+baseline   scalar_f32   f32    gc     -
+autovec    scalar_f32   f32    gcv    -
+intrinsic  rvv_f32      f32    gcv    -
+```
 
-Then make three changes to include it in the benchmark sweep.
+`arm` is what the row is evidence for, `kernel` must match a name in `bench.c`,
+`build` is `gc` or `gcv`, and `cflags` is extra compile flags or `-`. An arm is
+a kernel and a compilation together, which is why the first two rows share a
+kernel but differ in build. Because the tunables are compile-time macros, each
+distinct `(build, cflags)` combination is its own binary and its own config. A
+vector kernel on `build=gc` is rejected before building, since it would not
+link.
 
-**1. Register it in `bench.c`.**
+## Adding a kernel
 
-Wrap the kernel and add it to the registry. Both should be guarded with
-`__riscv_vector` when the kernel uses vector intrinsics.
+Build the kernel first, following the strategy guide in
+[CONTRIBUTING.md](../CONTRIBUTING.md). Then three edits put it in the sweep.
+
+Register it in `bench.c`, guarding both the wrapper and the registry entry with
+`__riscv_vector` for a vector kernel. The last two registry fields are the
+validation reference. Point them at a kernel of the same family, and every run
+is checked against it, with a mismatch recorded as `correct=0`.
 
 ```c
 #if defined(__riscv_vector)
 KERNEL_WRAP(mykernel_f32_w, rvsp_spgemm_mykernel_f32)
-#endif
-
 static const kernel_entry_t KERNELS[] = {
-#if defined(__riscv_vector)
     { "mykernel_f32", mykernel_f32_w, RVSP_DTYPE_FP32, "f32",
       scalar_f32_w, "scalar_f32" },
-#endif
 };
+#endif
 ```
 
-The fifth and sixth fields are the validation reference. Use a kernel from the
-same family. Every run is checked against it, and a mismatch is recorded as
-`correct=0`.
-
-**2. Add a row to `experiments.tsv`.**
-
-```text
-intrinsic	mykernel_f32	f32	gcv	-
-```
-
-**3. Add the kernel to the vector check in `run_bench.sh`** if it needs the V
-extension. This makes an invalid `gc` pairing fail before the sweep instead of
-at link time.
-
-```bash
-vector_kernel() {
-    case "$1" in
-        rvv_*|contig_*|adaptive_*)
-```
-
-Smoke-test the wiring before starting a longer run.
+Add a row to `experiments.tsv`. If the kernel needs the V extension, add its
+name to `vector_kernel()` in `run_bench.sh` so a bad `gc` pairing fails before
+the sweep rather than at link time. Then smoke-test before committing to a long
+run.
 
 ```bash
 bash bench/run_bench.sh --kernels mykernel_f32 --runs 2
 ```
 
-For a compile-time tunable, add one row for each setting. Each distinct
-`cflags` string requires an additional build.
+A compile-time tunable is swept with one row per setting, each costing an extra
+build.
 
 ```text
 intrinsic	mykernel_f32	f32	gcv	-DRVSP_MYKERNEL_THRESHOLD=8
@@ -159,24 +143,11 @@ intrinsic	mykernel_f32	f32	gcv	-DRVSP_MYKERNEL_THRESHOLD=32
 ## Files
 
 ```text
-experiments.tsv    experiment table
-run_bench.sh       preflight, build, sweep, and resume logic
+experiments.tsv    the experiment table
+run_bench.sh       preflight, build, sweep, resume
 bench.c            timing harness, one kernel on one product
 csr_check.c        canonical CSR check over the matrix set
 analyze.py         raw rows to summary with confidence intervals
-env.sh.example     per machine configuration template
-results/           raw and summary CSVs, created on first run
+env.sh.example     per-machine config template
+results/           CSVs, created on first run
 ```
-
-## Notes
-
-Only the kernel call is timed. Matrix construction, validation, workspace
-allocation, and teardown are outside the timed region. The workspace is
-allocated once and reused.
-
-The governor is pinned and restored, core frequency is checked before and after
-each config, and experiment order is shuffled per matrix with a recorded seed.
-
-For effects below about 5%, isolate the benchmark core with `isolcpus` or a
-cpuset. `taskset` pins the process but does not keep the scheduler off the
-core.
