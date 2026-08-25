@@ -170,22 +170,23 @@ KERNEL_WRAP(rvv_f32_w,      rvsp_spgemm_rvv_f32)
 #endif
 
 typedef struct {
-    const char   *name;
-    spgemm_fn     fn;
-    rvsp_dtype_t  dtype;
-    const char   *dtype_str;
-    spgemm_fn     ref;
-    const char   *ref_name;
+    const char        *name;
+    spgemm_fn          fn;
+    rvsp_spgemm_algo_t algo;
+    rvsp_dtype_t       dtype;
+    const char        *dtype_str;
+    spgemm_fn          ref;
+    const char        *ref_name;
 } kernel_entry_t;
 
 /* Each current kernel is validated against the matching scalar reference. */
 static const kernel_entry_t KERNELS[] = {
-    { "scalar_f32", scalar_f32_w, RVSP_DTYPE_FP32, "f32",
-      scalar_f32_w, "scalar_f32" },
+    { "scalar_f32", scalar_f32_w, RVSP_SPGEMM_ALGO_DEFAULT,
+      RVSP_DTYPE_FP32, "f32", scalar_f32_w, "scalar_f32" },
 
 #if defined(__riscv_vector)
-    { "rvv_f32", rvv_f32_w, RVSP_DTYPE_FP32, "f32",
-      scalar_f32_w, "scalar_f32" },
+    { "rvv_f32", rvv_f32_w, RVSP_SPGEMM_ALGO_RVV,
+      RVSP_DTYPE_FP32, "f32", scalar_f32_w, "scalar_f32" },
 #endif
 };
 
@@ -703,102 +704,147 @@ int main(int argc, char **argv) {
              &op_mean, &op_max, &op_var);
 
     /*
-     * Allocate kernel workspace once and reuse it across all runs.
-     * Keeping allocation outside the timed region isolates kernel execution.
+     * Two phase path. work_estimation does the symbolic pass and sizes C, the
+     * caller owns C's storage, and compute() runs the numeric pass only. That
+     * keeps symbolic work and every allocation outside the timed region.
      */
+    rvsp_spgemm_descr_t descr = NULL;
+
+    if (rvsp_spgemm_descr_create(&descr) != RVSP_SUCCESS) {
+        fprintf(stderr, "rvsp_spgemm_descr_create failed\n");
+        return 1;
+    }
+
+    if (rvsp_spgemm_set_algo(descr, K->algo) != RVSP_SUCCESS) {
+        fprintf(stderr, "rvsp_spgemm_set_algo failed for %s\n", K->name);
+        return 1;
+    }
+
     void *ws = NULL;
     size_t ws_bytes = 0;
+    int32_t c_nnz = 0;
 
     {
-        rvsp_status_t bs =
-            rvsp_spgemm_buffer_size(B.cols, &ws_bytes);
+        rvsp_status_t we =
+            rvsp_spgemm_work_estimation(descr, &A, &B, &ws_bytes, &c_nnz);
 
-        if (bs != RVSP_SUCCESS) {
-            fprintf(stderr,
-                    "rvsp_spgemm_buffer_size failed (%d) for b_cols=%d\n",
-                    (int)bs, B.cols);
+        if (we != RVSP_SUCCESS) {
+            fprintf(stderr, "rvsp_spgemm_work_estimation failed (%d)\n",
+                    (int)we);
             return 1;
         }
 
         ws = malloc(ws_bytes);
 
         if (!ws) {
-            fprintf(stderr,
-                    "workspace allocation failed (%zu bytes)\n",
+            fprintf(stderr, "workspace allocation failed (%zu bytes)\n",
                     ws_bytes);
             return 1;
         }
     }
 
-    /* Build the reference result outside the timed region. */
-    int64_t *kernel_ops = NULL;
+    /* Caller-allocated C, reused by every timed call. */
+    rvsp_csr_matrix_t C = {0};
 
     {
-        kernel_ops =
-            (int64_t *)calloc((size_t)A.rows, sizeof(int64_t));
+        const size_t nnz_alloc = c_nnz > 0 ? (size_t)c_nnz : 1;
 
-        if (!kernel_ops) {
-            fprintf(stderr, "kernel op_counts allocation failed\n");
+        C.rows = A.rows;
+        C.cols = B.cols;
+        C.nnz = c_nnz;
+        C.dtype = RVSP_DTYPE_FP32;
+        C.format = RVSP_FORMAT_CSR;
+        C.owns_data = 0;
+
+        C.row_ptr = malloc(((size_t)A.rows + 1) * sizeof(int32_t));
+        C.col_idx = malloc(nnz_alloc * sizeof(int32_t));
+        C.values = malloc(nnz_alloc * sizeof(float));
+
+        if (!C.row_ptr || !C.col_idx || !C.values) {
+            fprintf(stderr, "output allocation failed\n");
             return 1;
         }
     }
 
-    rvsp_csr_matrix_t Cref = {0};
+    /* Cross-check the descriptor's op counts against the harness. */
+    {
+        int64_t *kernel_ops =
+            (int64_t *)calloc((size_t)A.rows, sizeof(int64_t));
 
-    int have_ref =
-        (K->ref(&A, &B, &Cref, ws, ws_bytes, kernel_ops)
-         == RVSP_SUCCESS);
+        if (kernel_ops &&
+            rvsp_spgemm_get_op_counts(descr, kernel_ops, A.rows)
+            == RVSP_SUCCESS) {
 
-    if (kernel_ops) {
-        int32_t mismatch = -1;
-
-        for (int32_t i = 0; i < A.rows; i++) {
-            if (kernel_ops[i] != op_counts[i]) {
-                mismatch = i;
-                break;
+            for (int32_t i = 0; i < A.rows; i++) {
+                if (kernel_ops[i] != op_counts[i]) {
+                    fprintf(stderr,
+                            "warning: descriptor op_counts disagrees with the "
+                            "harness at row %d (%lld vs %lld)\n",
+                            i, (long long)kernel_ops[i],
+                            (long long)op_counts[i]);
+                    break;
+                }
             }
-        }
-
-        if (mismatch >= 0) {
-            fprintf(stderr,
-                    "warning: kernel op_counts disagrees with the harness "
-                    "at row %d (%lld vs %lld)\n",
-                    mismatch,
-                    (long long)kernel_ops[mismatch],
-                    (long long)op_counts[mismatch]);
         }
 
         free(kernel_ops);
     }
 
-    /* Warm up the kernel before collecting measurements. */
-    for (int w = 0; w < warmup; w++) {
-        rvsp_csr_matrix_t Cw = {0};
+    /*
+     * First compute() fills C's column indices and is not timed. Every later
+     * call sees the same C.col_idx buffer and skips the symbolic fill, so the
+     * timed region is the numeric pass.
+     */
+    if (rvsp_spgemm_compute(descr, &A, &B, &C, ws) != RVSP_SUCCESS) {
+        fprintf(stderr, "first rvsp_spgemm_compute failed\n");
+        return 1;
+    }
 
-        if (K->fn(&A, &B, &Cw, ws, ws_bytes, NULL)
-            == RVSP_SUCCESS)
-            rvsp_csr_destroy(&Cw);
+    /*
+     * Reference result, built outside the timed region. The one-shot entry
+     * point needs the full workspace, which is larger than the compute-only
+     * one work_estimation reports, so it gets its own buffer.
+     */
+    rvsp_csr_matrix_t Cref = {0};
+    int have_ref = 0;
+
+    {
+        size_t ref_ws_bytes = 0;
+
+        if (rvsp_spgemm_buffer_size(B.cols, &ref_ws_bytes) == RVSP_SUCCESS) {
+            void *ref_ws = malloc(ref_ws_bytes);
+
+            if (ref_ws) {
+                have_ref = (K->ref(&A, &B, &Cref, ref_ws, ref_ws_bytes, NULL)
+                            == RVSP_SUCCESS);
+                free(ref_ws);
+            }
+        }
+
+        if (!have_ref) {
+            fprintf(stderr, "warning: reference build failed, "
+                            "correctness will be reported as -1\n");
+        }
+    }
+
+    /* Warm up on the same path that will be timed. */
+    for (int w = 0; w < warmup; w++) {
+        rvsp_spgemm_compute(descr, &A, &B, &C, ws);
     }
 
     /* Timed runs. */
     perf_init();
 
     for (int r = 0; r < runs; r++) {
-        rvsp_csr_matrix_t C = {0};
-
         long long cycles = -1;
         long long insns = -1;
 
-        /*
-         * Do not request per-row op counts during timing; the workload
-         * statistics were already computed outside the measured region.
-         */
         perf_start();
 
         double t0 = now_seconds();
 
         rvsp_status_t st =
-            K->fn(&A, &B, &C, ws, ws_bytes, NULL);
+            rvsp_spgemm_compute(descr, &A, &B, &C, ws);
 
         double t1 = now_seconds();
 
@@ -855,15 +901,17 @@ int main(int argc, char **argv) {
             printf("\n");
 
         fflush(stdout);
-
-        /* Validation occurs after timing. */
-        if (st == RVSP_SUCCESS)
-            rvsp_csr_destroy(&C);
     }
 
     perf_close();
 
     /* Release benchmark resources. */
+    rvsp_spgemm_descr_destroy(descr);
+
+    free(C.row_ptr);
+    free(C.col_idx);
+    free(C.values);
+
     free(ws);
     free(op_counts);
 
