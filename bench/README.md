@@ -38,6 +38,16 @@ python3 bench/analyze.py bench/results/spgemm_raw.csv --csv-out bench/results/su
 `spgemm_raw.csv` holds one row per timed run and is only ever appended to.
 `summary.csv` holds one row per config, with medians and confidence intervals.
 
+Optionally plot it. Both scripts read the summary and need matplotlib.
+
+```bash
+python3 bench/plots/speedup_overview.py
+python3 bench/plots/speedup_oprow.py
+```
+
+Figures are written next to the summary, so `bench/results/`, which is
+gitignored. Pass a second argument to send them somewhere else.
+
 ## Narrowing the run
 
 The whole table runs by default. To run less:
@@ -145,6 +155,7 @@ run_bench.sh       preflight, build, sweep, resume
 bench.c            timing harness, one kernel on one product
 csr_check.c        canonical CSR check over the matrix set
 analyze.py         raw rows to summary with confidence intervals
+plots/             figures from the summary, needs matplotlib
 env.sh.example     per-machine config template
-results/           CSVs, created on first run
+results/           CSVs and figures, created on first run
 ```

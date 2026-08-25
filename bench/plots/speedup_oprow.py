@@ -4,15 +4,21 @@ Speedup of the RVV indexed kernel over scalar as a function of mean intermediate
 products per row (Op). Excludes failed-validation rows.
 
 Usage:
-    python3 speedup_vs_oprow.py [summary.csv]
+    python3 speedup_oprow.py [summary.csv] [out_dir]
+
+Figures are written next to the summary unless out_dir is given.
 """
 
 import csv
+import os
 import sys
 import matplotlib.pyplot as plt
 import numpy as np
 
-CSV = sys.argv[1] if len(sys.argv) > 1 else "summary.csv"
+CSV = sys.argv[1] if len(sys.argv) > 1 else "bench/results/summary.csv"
+OUT = sys.argv[2] if len(sys.argv) > 2 else (os.path.dirname(CSV) or ".")
+
+os.makedirs(OUT, exist_ok=True)
 
 plt.rcParams.update({
     "font.family": "serif",
@@ -56,8 +62,8 @@ ax.spines["top"].set_visible(False)
 ax.spines["right"].set_visible(False)
 
 fig.tight_layout(pad=0.3)
-fig.savefig("speedup_vs_oprow.pdf", bbox_inches="tight")
-fig.savefig("speedup_vs_oprow.png", bbox_inches="tight", dpi=200)
+fig.savefig(os.path.join(OUT, "speedup_vs_oprow.pdf"), bbox_inches="tight")
+fig.savefig(os.path.join(OUT, "speedup_vs_oprow.png"), bbox_inches="tight", dpi=200)
 
 print(f"indexed: mean={spd.mean():.3f} min={spd.min():.3f} max={spd.max():.3f} n={len(spd)}")
-print("wrote speedup_vs_oprow.pdf and .png")
+print(f"wrote {OUT}/speedup_vs_oprow.pdf and .png")

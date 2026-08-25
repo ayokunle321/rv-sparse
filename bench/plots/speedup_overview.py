@@ -4,15 +4,21 @@ Speedup of the three RVV strategies (indexed, contiguous-run, adaptive) over the
 scalar baseline, per matrix, ordered by mean intermediate products per row.
 
 Usage:
-    python3 speedup_overview.py [summary.csv]
+    python3 speedup_overview.py [summary.csv] [out_dir]
+
+Figures are written next to the summary unless out_dir is given.
 """
 
 import csv
+import os
 import sys
 import matplotlib.pyplot as plt
 import numpy as np
 
-CSV = sys.argv[1] if len(sys.argv) > 1 else "summary.csv"
+CSV = sys.argv[1] if len(sys.argv) > 1 else "bench/results/summary.csv"
+OUT = sys.argv[2] if len(sys.argv) > 2 else (os.path.dirname(CSV) or ".")
+
+os.makedirs(OUT, exist_ok=True)
 
 plt.rcParams.update({
     "font.family": "serif",
@@ -74,10 +80,10 @@ ax.legend(frameon=False, ncol=3, loc="lower center",
           bbox_to_anchor=(0.5, 1.01), handlelength=1.3, columnspacing=1.4)
 
 fig.tight_layout(pad=0.3)
-fig.savefig("speedup_overview.pdf", bbox_inches="tight")
-fig.savefig("speedup_overview.png", bbox_inches="tight", dpi=200)
+fig.savefig(os.path.join(OUT, "speedup_overview.pdf"), bbox_inches="tight")
+fig.savefig(os.path.join(OUT, "speedup_overview.png"), bbox_inches="tight", dpi=200)
 
 for name, d in [("indexed", indexed), ("contiguous-run", contig), ("adaptive", adaptive)]:
     vals = list(d.values())
     print(f"{name}: mean={np.mean(vals):.3f} min={min(vals):.3f} max={max(vals):.3f} n={len(vals)}")
-print("wrote speedup_overview.pdf and .png")
+print(f"wrote {OUT}/speedup_overview.pdf and .png")
