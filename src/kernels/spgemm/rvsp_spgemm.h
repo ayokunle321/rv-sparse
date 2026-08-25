@@ -58,12 +58,8 @@ const char *rvsp_csr_status_string(rvsp_csr_status_t status);
  * C = A * B. Output arrays are malloc'd by the callee, owned by the caller.
  * op_counts_out is optional, a_rows entries, and receives Op_i per output row.
  *
- * The strategies form a ladder, each adding one mechanism to the last.
- *
  *   scalar    no vector instructions
  *   rvv       gather, FMA, scatter on every segment
- *   contig    unit stride on contiguous runs, scalar elsewhere
- *   adaptive  runs, plus gather once a segment is long enough to pay for itself
  */
 #define RVSP_SPGEMM_PARAMS                                              \
     int32_t a_rows, int32_t a_cols, int32_t b_cols,                        \
@@ -78,8 +74,6 @@ const char *rvsp_csr_status_string(rvsp_csr_status_t status);
 
 rvsp_status_t rvsp_spgemm_scalar_f32(RVSP_SPGEMM_PARAMS);
 rvsp_status_t rvsp_spgemm_rvv_f32(RVSP_SPGEMM_PARAMS);
-rvsp_status_t rvsp_spgemm_contig_f32(RVSP_SPGEMM_PARAMS);
-rvsp_status_t rvsp_spgemm_adaptive_f32(RVSP_SPGEMM_PARAMS);
 
 /* Phases, exposed separately for the descriptor API. */
 
@@ -117,8 +111,6 @@ void rvsp_symbolic_fill(
 
 void rvsp_spgemm_scalar_f32_numeric(RVSP_NUMERIC_PARAMS);
 void rvsp_spgemm_rvv_f32_numeric(RVSP_NUMERIC_PARAMS);
-void rvsp_spgemm_contig_f32_numeric(RVSP_NUMERIC_PARAMS);
-void rvsp_spgemm_adaptive_f32_numeric(RVSP_NUMERIC_PARAMS);
 
 #ifdef __cplusplus
 }

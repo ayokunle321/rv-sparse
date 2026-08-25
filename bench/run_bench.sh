@@ -16,7 +16,6 @@
 #   autovec        same scalar source, rv64gcv
 #   intrinsic      handwritten RVV kernel
 #   scalar_unroll  manually unrolled scalar kernel
-#   adaptive       adaptive RVV kernel
 #
 # The raw CSV records arm, build, march, cflags, and compiler version so each
 # measurement is self-describing.
@@ -50,7 +49,7 @@
 #
 # Common cases:
 #   bash bench/run_bench.sh
-#   bash bench/run_bench.sh --kernels contig_f32
+#   bash bench/run_bench.sh --kernels rvv_f32
 #   bash bench/run_bench.sh --kernels intrinsic --runs 30
 #
 # Everything else is configured in bench/env.sh.
@@ -213,15 +212,15 @@ F_BUILD=4
 F_CFLAGS=6
 F_CORRECT=21
 
-VALID_ARMS="baseline autovec intrinsic scalar_unroll adaptive"
+VALID_ARMS="baseline autovec intrinsic"
 VALID_BUILDS="gc gcv"
-VALID_DTYPES="f32 f64 i8"
+VALID_DTYPES="f32"
 
 # Vector kernels require rv64gcv. Those sources deliberately #error under gc
 # rather than silently falling back to scalar code.
 vector_kernel() {
     case "$1" in
-        rvv_*|contig_*|adaptive_*)
+        rvv_*)
             return 0
             ;;
         *)

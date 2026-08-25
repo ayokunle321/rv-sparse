@@ -44,8 +44,6 @@ This selects the accumulation strategy used by the descriptor API.
 ```c
 RVSP_SPGEMM_ALGO_DEFAULT    scalar
 RVSP_SPGEMM_ALGO_RVV        gather and scatter
-RVSP_SPGEMM_ALGO_CONTIG     unit stride on contiguous runs
-RVSP_SPGEMM_ALGO_ADAPTIVE   selects among available strategies
 ```
 
 The three RVV strategies are available only in a vector build. Selecting one in
@@ -139,9 +137,6 @@ Returns `RVSP_SUCCESS` on success. It returns
 `RVSP_ERROR_UNSUPPORTED_BACKEND` when the requested backend or dtype is
 unavailable, or `RVSP_ERROR_INVALID_CSR` when an input matrix is not in
 canonical CSR format.
-
-The `options` argument cannot select the CONTIG or ADAPTIVE strategies. Use the
-descriptor API for those.
 
 ## Descriptor SpGEMM
 

@@ -31,11 +31,7 @@ extern "C"
 
     typedef enum
     {
-        RVSP_DTYPE_INT8,
-        RVSP_DTYPE_INT32,
-        RVSP_DTYPE_BF16,
-        RVSP_DTYPE_FP32,
-        RVSP_DTYPE_FP64
+        RVSP_DTYPE_FP32
     } rvsp_dtype_t;
 
     typedef enum
@@ -90,9 +86,7 @@ extern "C"
     typedef enum
     {
         RVSP_SPGEMM_ALGO_DEFAULT = 0, /* scalar */
-        RVSP_SPGEMM_ALGO_RVV,         /* gather and scatter */
-        RVSP_SPGEMM_ALGO_CONTIG,      /* unit stride on contiguous runs */
-        RVSP_SPGEMM_ALGO_ADAPTIVE     /* selects between available strategies */
+        RVSP_SPGEMM_ALGO_RVV          /* gather and scatter */
     } rvsp_spgemm_algo_t;
 
 #ifdef __cplusplus

@@ -1,9 +1,9 @@
 # bench/experiments.tsv -- experiment configurations.
 #
 # Columns:
-# arm     baseline | autovec | intrinsic | scalar_unroll | adaptive
+# arm     baseline | autovec | intrinsic
 # kernel  --kernel name from bench.c
-# dtype   f32 | f64 | i8
+# dtype   f32
 # build   gc | gcv
 # cflags  extra compile flags, or -
 #
@@ -19,13 +19,8 @@
 # Comparison:
 #   baseline vs autovec   compiler vectorisation
 #   baseline vs intrinsic hand-vectorised gather
-#   baseline vs contig    contiguous-run optimisation
-#   contig vs adaptive    gather dispatch
-#   rvv vs adaptive       dispatch vs always-gather
 
 arm	kernel	dtype	build	cflags
 baseline	scalar_f32	f32	gcv	-fno-tree-vectorize -fno-tree-slp-vectorize
 autovec	scalar_f32	f32	gcv	-
 intrinsic	rvv_f32	f32	gcv	-
-intrinsic	contig_f32	f32	gcv	-
-adaptive	adaptive_f32	f32	gcv	-

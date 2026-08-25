@@ -33,9 +33,6 @@ rv-sparse/
 │       ├── gustavson_core_f32.inc   shared driver, not compiled alone
 │       ├── accum_scalar_f32.c    accumulate strategies, one per file
 │       ├── accum_rvv_f32.c
-│       ├── accum_contig_f32.c
-│       ├── accum_adaptive_f32.c
-│       └── legacy/               pre-rework kernels, fp64 and int8
 │
 ├── bench/                        benchmark harness
 │   ├── experiments.tsv           the experiment table

@@ -103,9 +103,7 @@ EXCLUDED_SRCS := \
 SPGEMM_DIR := $(SRC_DIR)/kernels/spgemm
 
 VECTOR_SRCS := \
-	$(SPGEMM_DIR)/accum_rvv_f32.c \
-	$(SPGEMM_DIR)/accum_contig_f32.c \
-	$(SPGEMM_DIR)/accum_adaptive_f32.c
+	$(SPGEMM_DIR)/accum_rvv_f32.c
 
 # Check only the RISC-V ISA string so unrelated flags cannot match "v".
 MARCH_HAS_V := $(shell printf '%s' '$(ARCH_FLAGS)' | \

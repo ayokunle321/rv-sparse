@@ -41,8 +41,6 @@ static const struct
 } STRATEGIES[] = {
     {RVSP_SPGEMM_ALGO_DEFAULT, "scalar"},
     {RVSP_SPGEMM_ALGO_RVV, "rvv"},
-    {RVSP_SPGEMM_ALGO_CONTIG, "contig"},
-    {RVSP_SPGEMM_ALGO_ADAPTIVE, "adaptive"},
 };
 
 static void describe(const rvsp_fx_csr_t *m, rvsp_csr_matrix_t *out)

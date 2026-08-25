@@ -167,8 +167,6 @@ KERNEL_WRAP(scalar_f32_w, rvsp_spgemm_scalar_f32)
 
 #if defined(__riscv_vector)
 KERNEL_WRAP(rvv_f32_w,      rvsp_spgemm_rvv_f32)
-KERNEL_WRAP(contig_f32_w,   rvsp_spgemm_contig_f32)
-KERNEL_WRAP(adaptive_f32_w, rvsp_spgemm_adaptive_f32)
 #endif
 
 typedef struct {
@@ -187,10 +185,6 @@ static const kernel_entry_t KERNELS[] = {
 
 #if defined(__riscv_vector)
     { "rvv_f32", rvv_f32_w, RVSP_DTYPE_FP32, "f32",
-      scalar_f32_w, "scalar_f32" },
-    { "contig_f32", contig_f32_w, RVSP_DTYPE_FP32, "f32",
-      scalar_f32_w, "scalar_f32" },
-    { "adaptive_f32", adaptive_f32_w, RVSP_DTYPE_FP32, "f32",
       scalar_f32_w, "scalar_f32" },
 #endif
 };
@@ -298,19 +292,12 @@ static int vals_close(
     int32_t py,
     rvsp_dtype_t dtype) {
 
-    if (dtype == RVSP_DTYPE_FP32) {
-        float a = ((const float *)xv)[px];
-        float b = ((const float *)yv)[py];
-        return fabsf(a - b) <= 1e-5f + 1e-4f * fabsf(b);
-    } else if (dtype == RVSP_DTYPE_FP64) {
-        double a = ((const double *)xv)[px];
-        double b = ((const double *)yv)[py];
-        return fabs(a - b) <= 1e-12 + 1e-9 * fabs(b);
-    } else {
-        int32_t a = ((const int32_t *)xv)[px];
-        int32_t b = ((const int32_t *)yv)[py];
-        return a == b;
-    }
+    (void)dtype;
+
+    float a = ((const float *)xv)[px];
+    float b = ((const float *)yv)[py];
+
+    return fabsf(a - b) <= 1e-5f + 1e-4f * fabsf(b);
 }
 
 static int csr_equal(
@@ -410,36 +397,13 @@ static int build_from_genmat(
     for (int32_t p = 0; p < nnz; p++)
         raw->col_idx[p] = (int32_t)g->col_idx[p];
 
-    if (dtype == RVSP_DTYPE_FP32) {
+    {
         float *v = malloc((size_t)nnz * sizeof(float));
         if (!v)
             return -1;
 
         for (int32_t p = 0; p < nnz; p++)
             v[p] = (float)g->values[p];
-
-        raw->values = v;
-    } else if (dtype == RVSP_DTYPE_FP64) {
-        double *v = malloc((size_t)nnz * sizeof(double));
-        if (!v)
-            return -1;
-
-        for (int32_t p = 0; p < nnz; p++)
-            v[p] = g->values[p];
-
-        raw->values = v;
-    } else {
-        int8_t *v = malloc((size_t)nnz * sizeof(int8_t));
-        if (!v)
-            return -1;
-
-        for (int32_t p = 0; p < nnz; p++) {
-            double d = g->values[p];
-            int iv = (int)d % 127;
-            if (iv == 0)
-                iv = 1;
-            v[p] = (int8_t)iv;
-        }
 
         raw->values = v;
     }
@@ -482,34 +446,12 @@ static int build_from_mtx(
 
     const float *fv = (const float *)parsed->val->data;
 
-    if (dtype == RVSP_DTYPE_FP32) {
+    {
         float *v = malloc((size_t)nnz * sizeof(float));
         if (!v)
             return -1;
 
         memcpy(v, fv, (size_t)nnz * sizeof(float));
-        raw->values = v;
-    } else if (dtype == RVSP_DTYPE_FP64) {
-        double *v = malloc((size_t)nnz * sizeof(double));
-        if (!v)
-            return -1;
-
-        for (int32_t p = 0; p < nnz; p++)
-            v[p] = (double)fv[p];
-
-        raw->values = v;
-    } else {
-        int8_t *v = malloc((size_t)nnz * sizeof(int8_t));
-        if (!v)
-            return -1;
-
-        for (int32_t p = 0; p < nnz; p++) {
-            int iv = (int)fv[p] % 127;
-            if (iv == 0)
-                iv = 1;
-            v[p] = (int8_t)iv;
-        }
-
         raw->values = v;
     }
 
@@ -540,7 +482,7 @@ static void usage(const char *prog) {
         "          [--runs N] [--warmup W] [--label TAG] [--header]\n"
         "          [--arm ARM] [--build TAG] [--march FLAGS] [--cflags FLAGS]\n"
         "          [--cc-version VER]\n"
-        "arms:    baseline autovec intrinsic scalar_unroll adaptive\n"
+        "arms:    baseline autovec intrinsic\n"
         "kernels:\n",
         prog);
 

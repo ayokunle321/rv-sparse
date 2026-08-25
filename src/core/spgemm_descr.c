@@ -50,12 +50,6 @@ static rvsp_numeric_fn numeric_for(rvsp_spgemm_algo_t algo)
 #if defined(__riscv_vector)
     case RVSP_SPGEMM_ALGO_RVV:
         return rvsp_spgemm_rvv_f32_numeric;
-
-    case RVSP_SPGEMM_ALGO_CONTIG:
-        return rvsp_spgemm_contig_f32_numeric;
-
-    case RVSP_SPGEMM_ALGO_ADAPTIVE:
-        return rvsp_spgemm_adaptive_f32_numeric;
 #endif
 
     default:

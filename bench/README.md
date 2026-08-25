@@ -57,7 +57,7 @@ the kernels being scored against it have to be in the same raw CSV.
 The whole table runs by default. To run less:
 
 ```bash
-bash bench/run_bench.sh --kernels contig_f32   # one kernel and its baseline
+bash bench/run_bench.sh --kernels rvv_f32      # one kernel and its baseline
 bash bench/run_bench.sh --kernels intrinsic    # every row with that arm
 bash bench/run_bench.sh --dtype f32 --runs 30
 ```

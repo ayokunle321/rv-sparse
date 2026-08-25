@@ -11,14 +11,9 @@
 #include <stdlib.h>
 
 #include "rv_sparse.h"
-#include "../kernels/spgemm/legacy/csr_spgemm_kernels.h"
 #include "../kernels/spgemm/rvsp_spgemm.h"
 
 /*
- * fp32 uses the current kernel family. fp64 and int8 remain on the existing
- * kernels until corresponding implementations are available.
- */
-
 /*
  * The one-shot fp32 path uses the descriptor API so structure analysis and
  * numeric execution share one implementation.
@@ -176,35 +171,9 @@ rvsp_status_t rvsp_spgemm_csr(const rvsp_csr_matrix_t *A,
         return spgemm_csr_v2_oneshot(A, B, C, RVSP_SPGEMM_ALGO_RVV);
     }
 
-    /*
-     * fp64 and int8 continue to use the existing implementations.
-     */
-    if (backend == RVSP_BACKEND_SCALAR &&
-        input_dtype == RVSP_DTYPE_INT8 &&
-        output_dtype == RVSP_DTYPE_INT32)
+    if (input_dtype != RVSP_DTYPE_FP32 || output_dtype != RVSP_DTYPE_FP32)
     {
-        return rvsp_spgemm_csr_scalar_i8(A, B, C);
-    }
-
-    if (backend == RVSP_BACKEND_SCALAR &&
-        input_dtype == RVSP_DTYPE_FP64 &&
-        output_dtype == RVSP_DTYPE_FP64)
-    {
-        return rvsp_spgemm_csr_scalar_f64(A, B, C);
-    }
-
-    if (backend == RVSP_BACKEND_RVV_INTRINSICS &&
-        A->dtype == RVSP_DTYPE_INT8 &&
-        B->dtype == RVSP_DTYPE_INT8)
-    {
-        return rvsp_spgemm_csr_rvv_i8_indexed_marked(A, B, C);
-    }
-
-    if (backend == RVSP_BACKEND_RVV_INTRINSICS &&
-        A->dtype == RVSP_DTYPE_FP64 &&
-        B->dtype == RVSP_DTYPE_FP64)
-    {
-        return rvsp_spgemm_csr_rvv_f64_indexed_marked(A, B, C);
+        return RVSP_ERROR_UNSUPPORTED_DTYPE;
     }
 
     return RVSP_ERROR_UNSUPPORTED_BACKEND;
