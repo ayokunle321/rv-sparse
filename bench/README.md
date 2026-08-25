@@ -69,11 +69,12 @@ be computed.
 median, spread, GOP/s, and a speedup with a bootstrap 95% confidence interval. A
 config whose interval includes 1.0 is flagged not significant.
 
-The speedup denominator is the `baseline` arm at the `gc` build for the same
-matrix. This is cross-build on purpose. `autovec` is the scalar source compiled
-with the vector extension on, so scoring it against its own build would compare
-it to itself. `--baseline NAME` re-scores against a different kernel without
-rerunning anything.
+The speedup denominator is the `baseline` arm for the same matrix. Every arm
+builds at `rv64gcv`, so the baseline is not a different ISA, it is the same
+scalar source with the vectorizer switched off. `autovec` and `baseline` are
+then the same code compiled for the same target, and the only thing that varies
+is whether the compiler was allowed to vectorize. `--baseline NAME` re-scores
+against a different kernel without rerunning anything.
 
 ## The experiment table
 
@@ -82,7 +83,7 @@ row per cell of the sweep.
 
 ```text
 arm        kernel       dtype  build  cflags
-baseline   scalar_f32   f32    gc     -
+baseline   scalar_f32   f32    gcv    -fno-tree-vectorize -fno-tree-slp-vectorize
 autovec    scalar_f32   f32    gcv    -
 intrinsic  rvv_f32      f32    gcv    -
 ```
@@ -90,10 +91,14 @@ intrinsic  rvv_f32      f32    gcv    -
 `arm` is what the row is evidence for, `kernel` must match a name in `bench.c`,
 `build` is `gc` or `gcv`, and `cflags` is extra compile flags or `-`. An arm is
 a kernel and a compilation together, which is why the first two rows share a
-kernel but differ in build. Because the tunables are compile-time macros, each
-distinct `(build, cflags)` combination is its own binary and its own config. A
-vector kernel on `build=gc` is rejected before building, since it would not
-link.
+kernel and a build and differ only in cflags. Each distinct `(build, cflags)`
+combination is its own binary and its own config. A vector kernel on
+`build=gc` is rejected before building, since it would not link.
+
+The no-vectorize flags are GCC spelling. Clang ignores `-fno-tree-vectorize`
+with a warning rather than an error, so a clang build of that row would be
+silently vectorized and stop being a baseline. Use `-fno-vectorize
+-fno-slp-vectorize` there.
 
 ## Adding a kernel
 
