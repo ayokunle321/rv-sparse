@@ -48,6 +48,10 @@ python3 bench/plots/speedup_oprow.py
 Figures are written next to the summary, so `bench/results/`, which is
 gitignored. Pass a second argument to send them somewhere else.
 
+To reproduce a published table, run the sweep in one pass as above and
+summarise once. Speedups are computed within a single file, so the baseline and
+the kernels being scored against it have to be in the same raw CSV.
+
 ## Narrowing the run
 
 The whole table runs by default. To run less:
@@ -70,8 +74,16 @@ bash bench/run_bench.sh --dtype f32 --runs 30
 
 Runs resume safely. A config counts as done only at exactly `RUNS` rows, and a
 partial group is rerun rather than topped up, so interrupting a sweep is fine.
-Narrowing with `--kernels` keeps the baseline in the batch so speedups can still
-be computed.
+
+Narrowing is safe to combine with a full sweep. Every run appends to the same
+raw CSV, `--kernels` only chooses which configs execute, and a filter that
+excludes the baseline gets it added back so speedups still compute. Several
+narrow runs therefore accumulate into one file and one summary.
+
+The way to get this wrong is to set `CSV` or `OUT_DIR` and split runs across
+separate files. A summary can only divide by a baseline present in its own
+file, so a CSV holding just the vector kernels yields blank speedups. Keep one
+raw file unless you are deliberately separating a second toolchain.
 
 ## Analysis
 
