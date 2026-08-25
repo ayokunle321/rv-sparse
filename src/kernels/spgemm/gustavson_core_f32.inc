@@ -17,6 +17,7 @@
 
 void RVSP_NUMERIC_FN(
     int32_t a_rows,
+    int32_t b_cols,
     const int32_t *RVSP_RESTRICT a_row_ptr,
     const int32_t *RVSP_RESTRICT a_col_idx,
     const float *RVSP_RESTRICT a_values,
@@ -28,6 +29,8 @@ void RVSP_NUMERIC_FN(
     const int32_t *RVSP_RESTRICT c_col_idx,
     float *RVSP_RESTRICT c_values)
 {
+    (void)b_cols;
+
     for (int32_t row = 0; row < a_rows; row++)
     {
         const int32_t a_start = a_row_ptr[row];
@@ -174,6 +177,7 @@ rvsp_status_t RVSP_KERNEL_NAME(
 
     RVSP_NUMERIC_FN(
         a_rows,
+        b_cols,
         a_row_ptr,
         a_col_idx,
         a_values,

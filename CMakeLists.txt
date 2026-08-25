@@ -58,7 +58,7 @@ if(RVSP_ARCH_FLAGS MATCHES "(^| )-march=rv[0-9]+[a-z0-9_]*v")
 else()
     message(STATUS "vector kernels excluded: V extension not enabled")
     list(FILTER RVSP_SRCS EXCLUDE REGEX
-         "accum_rvv_f32\\.c$")
+         "accum_rvv_f32_m[124]\\.c$")
 endif()
 
 # The OpenMP kernel includes <omp.h>, which only exists when the toolchain

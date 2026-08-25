@@ -86,7 +86,11 @@ extern "C"
     typedef enum
     {
         RVSP_SPGEMM_ALGO_DEFAULT = 0, /* scalar */
-        RVSP_SPGEMM_ALGO_RVV          /* gather and scatter */
+        RVSP_SPGEMM_ALGO_RVV_M1,      /* gather and scatter, LMUL=1 */
+        RVSP_SPGEMM_ALGO_RVV_M2,      /* gather and scatter, LMUL=2 */
+        RVSP_SPGEMM_ALGO_RVV_M4,      /* gather and scatter, LMUL=4 */
+        RVSP_SPGEMM_ALGO_RVV = RVSP_SPGEMM_ALGO_RVV_M2,
+        RVSP_SPGEMM_ALGO_OMP          /* scalar, row loop over OpenMP threads */
     } rvsp_spgemm_algo_t;
 
 #ifdef __cplusplus

@@ -1,7 +1,8 @@
 # bench/experiments.tsv -- experiment configurations.
 #
 # Columns:
-# arm     baseline | autovec | intrinsic
+# arm     baseline | autovec | intrinsic | omp
+# threads OpenMP thread count, 1 for serial kernels
 # kernel  --kernel name from bench.c
 # dtype   f32
 # build   gc | gcv
@@ -20,7 +21,13 @@
 #   baseline vs autovec   compiler vectorisation
 #   baseline vs intrinsic hand-vectorised gather
 
-arm	kernel	dtype	build	cflags
-baseline	scalar_f32	f32	gcv	-fno-tree-vectorize -fno-tree-slp-vectorize
-autovec	scalar_f32	f32	gcv	-
-intrinsic	rvv_f32	f32	gcv	-
+arm	kernel	dtype	build	cflags	threads
+baseline	scalar_f32	f32	gcv	-fno-tree-vectorize -fno-tree-slp-vectorize	1
+autovec	scalar_f32	f32	gcv	-	1
+intrinsic	rvv_f32_m1	f32	gcv	-	1
+intrinsic	rvv_f32_m2	f32	gcv	-	1
+intrinsic	rvv_f32_m4	f32	gcv	-	1
+omp	scalar_omp_f32	f32	gcv	-fopenmp	1
+omp	scalar_omp_f32	f32	gcv	-fopenmp	2
+omp	scalar_omp_f32	f32	gcv	-fopenmp	4
+omp	scalar_omp_f32	f32	gcv	-fopenmp	8

@@ -138,4 +138,46 @@ rvsp_compute_ws_bind(
     ws->touched = NULL;
 }
 
+/*
+ * OpenMP numeric workspace.
+ *
+ * acc holds one full accumulator per thread so no two threads share a slot.
+ * mark and scratch serve the symbolic fill and are single copies.
+ */
+typedef struct
+{
+    float *acc; /* nthreads * b_cols */
+    uint8_t *mark;
+    int32_t *scratch;
+} rvsp_omp_ws_t;
+
+static inline size_t
+rvsp_omp_ws_bytes(int32_t b_cols, int32_t nthreads)
+{
+    const size_t n = (size_t)(b_cols > 0 ? b_cols : 1);
+    const size_t t = (size_t)(nthreads > 0 ? nthreads : 1);
+
+    return RVSP_ALIGN_UP(n * t * sizeof(float), 64) +
+           RVSP_ALIGN_UP(n * sizeof(uint8_t), 64) +
+           RVSP_ALIGN_UP(n * sizeof(int32_t), 64);
+}
+
+static inline void
+rvsp_omp_ws_bind(rvsp_omp_ws_t *ws, void *buffer, int32_t b_cols,
+                 int32_t nthreads)
+{
+    const size_t n = (size_t)(b_cols > 0 ? b_cols : 1);
+    const size_t t = (size_t)(nthreads > 0 ? nthreads : 1);
+
+    unsigned char *p = (unsigned char *)buffer;
+
+    ws->acc = (float *)p;
+    p += RVSP_ALIGN_UP(n * t * sizeof(float), 64);
+
+    ws->mark = (uint8_t *)p;
+    p += RVSP_ALIGN_UP(n * sizeof(uint8_t), 64);
+
+    ws->scratch = (int32_t *)p;
+}
+
 #endif

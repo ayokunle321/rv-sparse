@@ -49,7 +49,7 @@
 #
 # Common cases:
 #   bash bench/run_bench.sh
-#   bash bench/run_bench.sh --kernels rvv_f32
+#   bash bench/run_bench.sh --kernels rvv_f32_m2
 #   bash bench/run_bench.sh --kernels intrinsic --runs 30
 #
 # Everything else is configured in bench/env.sh.
@@ -203,16 +203,17 @@ MATRICES=(
     webbase-1M
 )
 
-CSV_HEADER="label,kernel,arm,build,march,cflags,cc_version,dtype,rows,cols,nnz_a,nnz_b,nnz_c,flops,op_mean,op_max,op_var,run,time_s,gops,correct,cycles,instructions"
-CSV_NFIELDS=23
+CSV_HEADER="label,kernel,arm,build,march,cflags,cc_version,dtype,rows,cols,nnz_a,nnz_b,nnz_c,flops,op_mean,op_max,op_var,run,time_s,gops,correct,cycles,instructions,threads,stalls_backend,perf_mux,lmul"
+CSV_NFIELDS=27
 
 F_LABEL=1
 F_KERNEL=2
 F_BUILD=4
 F_CFLAGS=6
 F_CORRECT=21
+F_THREADS=24
 
-VALID_ARMS="baseline autovec intrinsic"
+VALID_ARMS="baseline autovec intrinsic omp"
 VALID_BUILDS="gc gcv"
 VALID_DTYPES="f32"
 
@@ -578,12 +579,14 @@ EXP_KERNEL=()
 EXP_DTYPE=()
 EXP_BUILD=()
 EXP_CFLAGS=()
+EXP_THREADS=()
 
 POOL_ARM=()
 POOL_KERNEL=()
 POOL_DTYPE=()
 POOL_BUILD=()
 POOL_CFLAGS=()
+POOL_THREADS=()
 
 ALL_KERNELS=()
 
@@ -610,7 +613,7 @@ load_experiments() {
 
     # Validate the whole table before filtering so malformed rows are always
     # reported rather than hidden by the current selection.
-    while IFS=$'\t' read -r arm kernel dtype build cflags; do
+    while IFS=$'\t' read -r arm kernel dtype build cflags threads; do
         n=$((n + 1))
 
         [ -n "$arm" ] &&
@@ -620,6 +623,10 @@ load_experiments() {
             die "$EXP_FILE row $n: expected 5 tab-separated fields"
 
         [ -n "$cflags" ] || cflags="-"
+        [ -n "$threads" ] || threads=1
+
+        is_uint "$threads" ||
+            die "$EXP_FILE row $n: threads '$threads' is not a non-negative integer"
 
         case "$cflags" in
             *,*)
@@ -662,6 +669,7 @@ Vector kernels require build 'gcv'."
         POOL_DTYPE+=("$dtype")
         POOL_BUILD+=("$build")
         POOL_CFLAGS+=("$cflags")
+        POOL_THREADS+=("$threads")
 
         kept=$((kept + 1))
 
@@ -670,7 +678,7 @@ Vector kernels require build 'gcv'."
             /^[[:space:]]*#/ { next }
             /^[[:space:]]*$/ { next }
             $1 == "arm" && $2 == "kernel" { next }
-            { print $1 "\t" $2 "\t" $3 "\t" $4 "\t" $5 }
+            { print $1 "\t" $2 "\t" $3 "\t" $4 "\t" $5 "\t" $6 }
         ' "$EXP_FILE"
     )
 
@@ -715,6 +723,7 @@ arms:    $VALID_ARMS"
         EXP_DTYPE+=("${POOL_DTYPE[i]}")
         EXP_BUILD+=("${POOL_BUILD[i]}")
         EXP_CFLAGS+=("${POOL_CFLAGS[i]}")
+        EXP_THREADS+=("${POOL_THREADS[i]}")
     done
 
     [ "${#EXP_ARM[@]}" -gt 0 ] ||
@@ -757,6 +766,7 @@ arms:    $VALID_ARMS"
             EXP_DTYPE+=("${POOL_DTYPE[j]}")
             EXP_BUILD+=("${POOL_BUILD[j]}")
             EXP_CFLAGS+=("${POOL_CFLAGS[j]}")
+            EXP_THREADS+=("${POOL_THREADS[j]}")
         done
 
         echo ">> baseline '$BASELINE_KERNEL' was not in --kernels; added ${#add[@]} row(s) for it."
@@ -901,6 +911,15 @@ build_all() {
 
     [ "$cflags" != "-" ] && extra="$cflags"
 
+    # The OpenMP kernel source is gated in the Makefile. A row asks for it with
+    # -fopenmp in cflags, which also gives it its own build variant so the
+    # baseline is never rebuilt with OpenMP enabled.
+    local openmp=0
+
+    case "$cflags" in
+        *-fopenmp*) openmp=1 ;;
+    esac
+
     objdir="obj/$tag"
     libdir="lib/$tag"
     bindir="bin/$tag"
@@ -915,6 +934,7 @@ build_all() {
 
     make CC="$CC" \
         ARCH_FLAGS="$march $extra" \
+        OPENMP="$openmp" \
         OBJ_DIR="$objdir" \
         LIB_DIR="$libdir" \
         BIN_DIR="$bindir" \
@@ -1074,9 +1094,10 @@ else
             -v fb="$F_BUILD" \
             -v fc="$F_CFLAGS" \
             -v fk="$F_KERNEL" \
-            -v fl="$F_LABEL" '
+            -v fl="$F_LABEL" \
+            -v fth="$F_THREADS" '
             NR > 1 {
-                c[$fb FS $fc FS $fk FS $fl]++
+                c[$fb FS $fc FS $fk FS $fl FS $fth]++
             }
             END {
                 n = 0
@@ -1152,15 +1173,18 @@ config_count() {
         -v k="$2" \
         -v b="$3" \
         -v cf="$4" \
+        -v th="$5" \
         -v fl="$F_LABEL" \
         -v fk="$F_KERNEL" \
         -v fb="$F_BUILD" \
-        -v fcf="$F_CFLAGS" '
+        -v fcf="$F_CFLAGS" \
+        -v fth="$F_THREADS" '
         NR > 1 &&
         $fl == l &&
         $fk == k &&
         $fb == b &&
-        $fcf == cf
+        $fcf == cf &&
+        $fth == th
         ' "$CSV" |
     wc -l |
     tr -d ' '
@@ -1177,12 +1201,14 @@ purge_config() {
         -v k="$2" \
         -v b="$3" \
         -v cf="$4" \
+        -v th="$5" \
         -v fl="$F_LABEL" \
         -v fk="$F_KERNEL" \
         -v fb="$F_BUILD" \
-        -v fcf="$F_CFLAGS" '
+        -v fcf="$F_CFLAGS" \
+        -v fth="$F_THREADS" '
         NR == 1 ||
-        !($fl == l && $fk == k && $fb == b && $fcf == cf)
+        !($fl == l && $fk == k && $fb == b && $fcf == cf && $fth == th)
         ' "$CSV" > "$tmp" &&
         mv -f "$tmp" "$CSV"; then
         :
@@ -1278,6 +1304,7 @@ run_config() {
     local k="${EXP_KERNEL[ei]}"
     local b="${EXP_BUILD[ei]}"
     local cf="${EXP_CFLAGS[ei]}"
+    local th="${EXP_THREADS[ei]}"
 
     local tag
     tag="$(exp_tag "$ei")"
@@ -1288,11 +1315,12 @@ run_config() {
     local desc="$k@$b"
 
     [ "$cf" != "-" ] && desc="$k@$b[$cf]"
+    [ "$th" != "1" ] && desc="$desc t$th"
 
     ATTEMPTED_COUNT=$((ATTEMPTED_COUNT + 1))
 
     local have
-    have="$(config_count "$label" "$k" "$b" "$cf")"
+    have="$(config_count "$label" "$k" "$b" "$cf" "$th")"
 
     if [ "$FORCE" != "1" ] && [ "$have" -eq "$RUNS" ]; then
         echo "   $label  $desc ($arm)  [have]"
@@ -1302,7 +1330,7 @@ run_config() {
 
     if [ "$have" -gt 0 ]; then
         echo "   $label  $desc ($arm)  [partial: $have/$RUNS present — purging and re-running clean]"
-        purge_config "$label" "$k" "$b" "$cf"
+        purge_config "$label" "$k" "$b" "$cf" "$th"
     else
         echo "   $label  $desc ($arm)"
     fi
@@ -1324,7 +1352,7 @@ run_config() {
         tmp="$(mktemp "$OUT_DIR/.run_XXXXXX")"
         valid="$(mktemp "$OUT_DIR/.valid_XXXXXX")"
 
-        if $RUNNER "./bench/bench_$tag" \
+        if OMP_NUM_THREADS="$th" $RUNNER "./bench/bench_$tag" \
             --kernel "$k" \
             "$@" \
             --runs "$RUNS" \
@@ -1334,6 +1362,7 @@ run_config() {
             --build "$b" \
             --march "$march" \
             --cflags "$cf" \
+            --threads "$th" \
             --cc-version "$CC_VERSION" \
             > "$tmp" \
             2>"$tmp.err"; then
@@ -1455,9 +1484,9 @@ BAD_GROUPS=0
 while IFS= read -r grp; do
     [ -z "$grp" ] && continue
 
-    IFS=$'\t' read -r lbl kern bld cfl <<< "$grp"
+    IFS=$'\t' read -r lbl kern bld cfl th <<< "$grp"
 
-    n="$(config_count "$lbl" "$kern" "$bld" "$cfl")"
+    n="$(config_count "$lbl" "$kern" "$bld" "$cfl" "$th")"
 
     if [ "$n" -ne "$RUNS" ]; then
         echo "   !! $lbl / $kern@$bld[$cfl] has $n/$RUNS rows (not exactly RUNS)"
@@ -1469,9 +1498,10 @@ done < <(
         -v fl="$F_LABEL" \
         -v fk="$F_KERNEL" \
         -v fb="$F_BUILD" \
-        -v fcf="$F_CFLAGS" '
+        -v fcf="$F_CFLAGS" \
+        -v fth="$F_THREADS" '
         NR > 1 {
-            print $fl "\t" $fk "\t" $fb "\t" $fcf
+            print $fl "\t" $fk "\t" $fb "\t" $fcf "\t" $fth
         }
         ' "$CSV" |
     sort -u

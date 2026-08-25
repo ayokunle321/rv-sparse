@@ -73,7 +73,9 @@ const char *rvsp_csr_status_string(rvsp_csr_status_t status);
     int64_t *op_counts_out
 
 rvsp_status_t rvsp_spgemm_scalar_f32(RVSP_SPGEMM_PARAMS);
-rvsp_status_t rvsp_spgemm_rvv_f32(RVSP_SPGEMM_PARAMS);
+rvsp_status_t rvsp_spgemm_rvv_f32_m1(RVSP_SPGEMM_PARAMS);
+rvsp_status_t rvsp_spgemm_rvv_f32_m2(RVSP_SPGEMM_PARAMS);
+rvsp_status_t rvsp_spgemm_rvv_f32_m4(RVSP_SPGEMM_PARAMS);
 
 /* Phases, exposed separately for the descriptor API. */
 
@@ -100,7 +102,7 @@ void rvsp_symbolic_fill(
     int32_t *c_col_idx);         /* out, sorted within each row */
 
 #define RVSP_NUMERIC_PARAMS                                             \
-    int32_t a_rows,                                                        \
+    int32_t a_rows, int32_t b_cols,                                        \
     const int32_t *a_row_ptr, const int32_t *a_col_idx,                    \
     const float *a_values,                                                 \
     const int32_t *b_row_ptr, const int32_t *b_col_idx,                    \
@@ -110,7 +112,15 @@ void rvsp_symbolic_fill(
     float *c_values
 
 void rvsp_spgemm_scalar_f32_numeric(RVSP_NUMERIC_PARAMS);
-void rvsp_spgemm_rvv_f32_numeric(RVSP_NUMERIC_PARAMS);
+void rvsp_spgemm_rvv_f32_m1_numeric(RVSP_NUMERIC_PARAMS);
+void rvsp_spgemm_rvv_f32_m2_numeric(RVSP_NUMERIC_PARAMS);
+void rvsp_spgemm_rvv_f32_m4_numeric(RVSP_NUMERIC_PARAMS);
+
+#if defined(_OPENMP)
+/* Row loop parallelised with OpenMP. acc is nthreads consecutive
+ * accumulators of b_cols floats, sized by rvsp_spgemm_omp_buffer_size. */
+void rvsp_spgemm_scalar_omp_f32_numeric(RVSP_NUMERIC_PARAMS);
+#endif
 
 #ifdef __cplusplus
 }

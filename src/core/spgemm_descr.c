@@ -16,6 +16,10 @@
 #include "../kernels/spgemm/rvsp_spgemm.h"
 #include "../kernels/spgemm/rvsp_common.h"
 
+#if defined(_OPENMP)
+#include <omp.h>
+#endif
+
 struct rvsp_spgemm_descr
 {
     rvsp_spgemm_algo_t algo;
@@ -48,8 +52,19 @@ static rvsp_numeric_fn numeric_for(rvsp_spgemm_algo_t algo)
         return rvsp_spgemm_scalar_f32_numeric;
 
 #if defined(__riscv_vector)
-    case RVSP_SPGEMM_ALGO_RVV:
-        return rvsp_spgemm_rvv_f32_numeric;
+    case RVSP_SPGEMM_ALGO_RVV_M1:
+        return rvsp_spgemm_rvv_f32_m1_numeric;
+
+    case RVSP_SPGEMM_ALGO_RVV_M2:
+        return rvsp_spgemm_rvv_f32_m2_numeric;
+
+    case RVSP_SPGEMM_ALGO_RVV_M4:
+        return rvsp_spgemm_rvv_f32_m4_numeric;
+#endif
+
+#if defined(_OPENMP)
+    case RVSP_SPGEMM_ALGO_OMP:
+        return rvsp_spgemm_scalar_omp_f32_numeric;
 #endif
 
     default:
@@ -239,7 +254,17 @@ rvsp_status_t rvsp_spgemm_work_estimation(rvsp_spgemm_descr_t descr,
     descr->b_cols = B->cols;
     descr->b_nnz = B->nnz;
 
-    descr->workspace_bytes = rvsp_compute_ws_bytes(B->cols);
+#if defined(_OPENMP)
+    if (descr->algo == RVSP_SPGEMM_ALGO_OMP)
+    {
+        descr->workspace_bytes =
+            rvsp_omp_ws_bytes(B->cols, (int32_t)omp_get_max_threads());
+    }
+    else
+#endif
+    {
+        descr->workspace_bytes = rvsp_compute_ws_bytes(B->cols);
+    }
     descr->estimated = 1;
 
     *workspace_bytes = descr->workspace_bytes;
@@ -313,8 +338,28 @@ rvsp_status_t rvsp_spgemm_compute(rvsp_spgemm_descr_t descr,
         return RVSP_ERROR_UNSUPPORTED_BACKEND;
     }
 
+    /* mark and scratch sit after acc, so the OpenMP layout must be bound with
+     * the per-thread accumulator stride or they would alias into it. */
     rvsp_ws_t ws;
-    rvsp_compute_ws_bind(&ws, workspace, descr->b_cols);
+
+#if defined(_OPENMP)
+    if (descr->algo == RVSP_SPGEMM_ALGO_OMP)
+    {
+        rvsp_omp_ws_t ompws;
+
+        rvsp_omp_ws_bind(&ompws, workspace, descr->b_cols,
+                         (int32_t)omp_get_max_threads());
+
+        ws.acc = ompws.acc;
+        ws.mark = ompws.mark;
+        ws.scratch = ompws.scratch;
+        ws.touched = NULL;
+    }
+    else
+#endif
+    {
+        rvsp_compute_ws_bind(&ws, workspace, descr->b_cols);
+    }
 
     memcpy(C->row_ptr, descr->c_row_ptr,
            ((size_t)descr->a_rows + 1) * sizeof(int32_t));
@@ -334,9 +379,20 @@ rvsp_status_t rvsp_spgemm_compute(rvsp_spgemm_descr_t descr,
         descr->filled_into = C->col_idx;
     }
 
-    memset(ws.acc, 0, (size_t)descr->b_cols * sizeof(float));
+#if defined(_OPENMP)
+    if (descr->algo == RVSP_SPGEMM_ALGO_OMP)
+    {
+        memset(ws.acc, 0,
+               (size_t)descr->b_cols *
+               (size_t)omp_get_max_threads() * sizeof(float));
+    }
+    else
+#endif
+    {
+        memset(ws.acc, 0, (size_t)descr->b_cols * sizeof(float));
+    }
 
-    numeric(descr->a_rows,
+    numeric(descr->a_rows, descr->b_cols,
             A->row_ptr, A->col_idx, (const float *)A->values,
             B->row_ptr, B->col_idx, (const float *)B->values,
             ws.acc,

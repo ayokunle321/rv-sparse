@@ -47,8 +47,21 @@
 #include <unistd.h>
 #include <errno.h>
 
+/*
+ * Three counters on a PMU with few slots will usually be multiplexed, so each
+ * is opened with TOTAL_TIME_ENABLED and TOTAL_TIME_RUNNING. A caller scales a
+ * raw count back to a full-window estimate with enabled/running; when the two
+ * are equal the counter ran the whole time and no scaling is needed.
+ */
+struct perf_read {
+    uint64_t value;
+    uint64_t time_enabled;
+    uint64_t time_running;
+};
+
 static int perf_fd_cycles = -1;
 static int perf_fd_insns  = -1;
+static int perf_fd_stalls = -1;
 
 static int perf_open_one(uint32_t type, uint64_t config, int group_fd) {
     struct perf_event_attr pe;
@@ -59,6 +72,8 @@ static int perf_open_one(uint32_t type, uint64_t config, int group_fd) {
     pe.disabled       = 1;
     pe.exclude_kernel = 1;
     pe.exclude_hv     = 1;
+    pe.read_format    = PERF_FORMAT_TOTAL_TIME_ENABLED |
+                        PERF_FORMAT_TOTAL_TIME_RUNNING;
 
     long fd = syscall(__NR_perf_event_open, &pe, 0, -1, group_fd, 0);
     return (int)fd;
@@ -69,40 +84,68 @@ static void perf_init(void) {
         perf_open_one(PERF_TYPE_HARDWARE, PERF_COUNT_HW_CPU_CYCLES, -1);
     perf_fd_insns =
         perf_open_one(PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS, -1);
+    perf_fd_stalls =
+        perf_open_one(PERF_TYPE_HARDWARE,
+                      PERF_COUNT_HW_STALLED_CYCLES_BACKEND, -1);
 
     if (perf_fd_cycles < 0 || perf_fd_insns < 0)
         fprintf(stderr,
                 "warning: perf counters unavailable (%s); "
                 "cycles/instructions will be blank\n",
                 strerror(errno));
+
+    if (perf_fd_stalls < 0)
+        fprintf(stderr,
+                "warning: stalled-cycles-backend unavailable on this PMU; "
+                "the column will be blank\n");
+}
+
+static void perf_enable_one(int fd) {
+    if (fd >= 0) {
+        ioctl(fd, PERF_EVENT_IOC_RESET, 0);
+        ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
+    }
 }
 
 static void perf_start(void) {
-    if (perf_fd_cycles >= 0) {
-        ioctl(perf_fd_cycles, PERF_EVENT_IOC_RESET, 0);
-        ioctl(perf_fd_cycles, PERF_EVENT_IOC_ENABLE, 0);
-    }
-    if (perf_fd_insns >= 0) {
-        ioctl(perf_fd_insns, PERF_EVENT_IOC_RESET, 0);
-        ioctl(perf_fd_insns, PERF_EVENT_IOC_ENABLE, 0);
-    }
+    perf_enable_one(perf_fd_cycles);
+    perf_enable_one(perf_fd_insns);
+    perf_enable_one(perf_fd_stalls);
 }
 
-static void perf_stop(long long *cycles, long long *insns) {
-    *cycles = -1;
-    *insns = -1;
+/* Returns the raw count, and reports the counter's enabled and running time
+ * so the caller can tell whether it was multiplexed. */
+static long long perf_read_one(int fd, uint64_t *enabled, uint64_t *running) {
+    if (fd < 0)
+        return -1;
 
-    if (perf_fd_cycles >= 0) {
-        ioctl(perf_fd_cycles, PERF_EVENT_IOC_DISABLE, 0);
-        if (read(perf_fd_cycles, cycles, sizeof(*cycles)) != sizeof(*cycles))
-            *cycles = -1;
-    }
+    ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
 
-    if (perf_fd_insns >= 0) {
-        ioctl(perf_fd_insns, PERF_EVENT_IOC_DISABLE, 0);
-        if (read(perf_fd_insns, insns, sizeof(*insns)) != sizeof(*insns))
-            *insns = -1;
-    }
+    struct perf_read pr = {0};
+
+    if (read(fd, &pr, sizeof(pr)) != (ssize_t)sizeof(pr))
+        return -1;
+
+    if (enabled)
+        *enabled = pr.time_enabled;
+
+    if (running)
+        *running = pr.time_running;
+
+    return (long long)pr.value;
+}
+
+static void perf_stop(long long *cycles, long long *insns,
+                      long long *stalls, double *mux) {
+    uint64_t enabled = 0;
+    uint64_t running = 0;
+
+    *cycles = perf_read_one(perf_fd_cycles, NULL, NULL);
+    *insns  = perf_read_one(perf_fd_insns, NULL, NULL);
+    *stalls = perf_read_one(perf_fd_stalls, &enabled, &running);
+
+    /* Fraction of the measured window the stall counter was actually on. */
+    *mux = (enabled > 0) ? (double)running / (double)enabled : -1.0;
 }
 
 static void perf_close(void) {
@@ -110,13 +153,18 @@ static void perf_close(void) {
         close(perf_fd_cycles);
     if (perf_fd_insns >= 0)
         close(perf_fd_insns);
+    if (perf_fd_stalls >= 0)
+        close(perf_fd_stalls);
 }
 #else
 static void perf_init(void) {}
 static void perf_start(void) {}
-static void perf_stop(long long *cycles, long long *insns) {
+static void perf_stop(long long *cycles, long long *insns,
+                      long long *stalls, double *mux) {
     *cycles = -1;
     *insns = -1;
+    *stalls = -1;
+    *mux = -1.0;
 }
 static void perf_close(void) {}
 #endif
@@ -166,13 +214,16 @@ typedef rvsp_status_t (*spgemm_fn)(
 KERNEL_WRAP(scalar_f32_w, rvsp_spgemm_scalar_f32)
 
 #if defined(__riscv_vector)
-KERNEL_WRAP(rvv_f32_w,      rvsp_spgemm_rvv_f32)
+KERNEL_WRAP(rvv_f32_m1_w, rvsp_spgemm_rvv_f32_m1)
+KERNEL_WRAP(rvv_f32_m2_w, rvsp_spgemm_rvv_f32_m2)
+KERNEL_WRAP(rvv_f32_m4_w, rvsp_spgemm_rvv_f32_m4)
 #endif
 
 typedef struct {
     const char        *name;
     spgemm_fn          fn;
     rvsp_spgemm_algo_t algo;
+    int                lmul;   /* 0 when the kernel is not RVV */
     rvsp_dtype_t       dtype;
     const char        *dtype_str;
     spgemm_fn          ref;
@@ -181,11 +232,20 @@ typedef struct {
 
 /* Each current kernel is validated against the matching scalar reference. */
 static const kernel_entry_t KERNELS[] = {
-    { "scalar_f32", scalar_f32_w, RVSP_SPGEMM_ALGO_DEFAULT,
+    { "scalar_f32", scalar_f32_w, RVSP_SPGEMM_ALGO_DEFAULT, 0,
       RVSP_DTYPE_FP32, "f32", scalar_f32_w, "scalar_f32" },
 
 #if defined(__riscv_vector)
-    { "rvv_f32", rvv_f32_w, RVSP_SPGEMM_ALGO_RVV,
+    { "rvv_f32_m1", rvv_f32_m1_w, RVSP_SPGEMM_ALGO_RVV_M1, 1,
+      RVSP_DTYPE_FP32, "f32", scalar_f32_w, "scalar_f32" },
+    { "rvv_f32_m2", rvv_f32_m2_w, RVSP_SPGEMM_ALGO_RVV_M2, 2,
+      RVSP_DTYPE_FP32, "f32", scalar_f32_w, "scalar_f32" },
+    { "rvv_f32_m4", rvv_f32_m4_w, RVSP_SPGEMM_ALGO_RVV_M4, 4,
+      RVSP_DTYPE_FP32, "f32", scalar_f32_w, "scalar_f32" },
+#endif
+
+#if defined(_OPENMP)
+    { "scalar_omp_f32", scalar_f32_w, RVSP_SPGEMM_ALGO_OMP, 0,
       RVSP_DTYPE_FP32, "f32", scalar_f32_w, "scalar_f32" },
 #endif
 };
@@ -474,13 +534,14 @@ static void free_raw(raw_csr_t *raw) {
 #define CSV_HEADER \
     "label,kernel,arm,build,march,cflags,cc_version,dtype," \
     "rows,cols,nnz_a,nnz_b,nnz_c,flops,op_mean,op_max,op_var," \
-    "run,time_s,gops,correct,cycles,instructions"
+    "run,time_s,gops,correct,cycles,instructions,threads," \
+    "stalls_backend,perf_mux,lmul"
 
 static void usage(const char *prog) {
     fprintf(stderr,
         "usage: %s --kernel NAME "
         "(--gen R C DENSITY SEED | --mtx A.mtx B.mtx | --mtx-sq M.mtx)\n"
-        "          [--runs N] [--warmup W] [--label TAG] [--header]\n"
+        "          [--runs N] [--warmup W] [--threads N] [--label TAG] [--header]\n"
         "          [--arm ARM] [--build TAG] [--march FLAGS] [--cflags FLAGS]\n"
         "          [--cc-version VER]\n"
         "arms:    baseline autovec intrinsic\n"
@@ -520,6 +581,7 @@ int main(int argc, char **argv) {
 
     int runs = 10;
     int warmup = 3;
+    int threads = 1;
     int header = 0;
 
     enum {
@@ -544,6 +606,8 @@ int main(int argc, char **argv) {
             runs = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--warmup") && i + 1 < argc)
             warmup = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--threads") && i + 1 < argc)
+            threads = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--label") && i + 1 < argc)
             label = argv[++i];
         else if (!strcmp(argv[i], "--arm") && i + 1 < argc)
@@ -838,6 +902,8 @@ int main(int argc, char **argv) {
     for (int r = 0; r < runs; r++) {
         long long cycles = -1;
         long long insns = -1;
+        long long stalls = -1;
+        double mux = -1.0;
 
         perf_start();
 
@@ -848,7 +914,7 @@ int main(int argc, char **argv) {
 
         double t1 = now_seconds();
 
-        perf_stop(&cycles, &insns);
+        perf_stop(&cycles, &insns, &stalls, &mux);
 
         double dt = t1 - t0;
         int correct = 0;
@@ -896,7 +962,25 @@ int main(int argc, char **argv) {
             printf(",");
 
         if (insns >= 0)
-            printf("%lld\n", insns);
+            printf("%lld,", insns);
+        else
+            printf(",");
+
+        printf("%d,", threads);
+
+        if (stalls >= 0)
+            printf("%lld,", stalls);
+        else
+            printf(",");
+
+        if (mux >= 0.0)
+            printf("%.4f,", mux);
+        else
+            printf(",");
+
+        /* Blank for kernels that are not RVV. */
+        if (K->lmul > 0)
+            printf("%d\n", K->lmul);
         else
             printf("\n");
 

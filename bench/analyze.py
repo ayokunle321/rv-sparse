@@ -100,7 +100,15 @@ def load(path):
             )
             row["cc_version"] = (row.get("cc_version") or "-").strip()
 
+            try:
+                row["threads"] = int(row.get("threads") or 1)
+            except ValueError:
+                row["threads"] = 1
+
             row["cycles"] = _fnum(row, "cycles")
+            row["stalls_backend"] = _fnum(row, "stalls_backend")
+            row["perf_mux"] = _fnum(row, "perf_mux")
+            row["lmul"] = (row.get("lmul") or "").strip()
             row["instructions"] = _fnum(row, "instructions")
 
             row["op_mean"] = _fnum(row, "op_mean")
@@ -212,6 +220,7 @@ def summarize(rows):
             row["cflags"],
             row["kernel"],
             row["dtype"],
+            row["threads"],
         )
         groups[key].append(row)
 
@@ -233,6 +242,8 @@ def summarize(rows):
 
         entry = {
             "arm": rows_in_group[0]["arm"],
+            "threads": rows_in_group[0]["threads"],
+            "lmul": rows_in_group[0]["lmul"],
             "march": rows_in_group[0]["march"],
             "cc_version": rows_in_group[0]["cc_version"],
             "runs": len(rows_in_group),
@@ -285,9 +296,24 @@ def summarize(rows):
             if row["instructions"] is not None
         ]
 
+        stalls = [
+            row["stalls_backend"]
+            for row in rows_in_group
+            if row["stalls_backend"] is not None
+        ]
+        mux = [
+            row["perf_mux"]
+            for row in rows_in_group
+            if row["perf_mux"] is not None and row["perf_mux"] >= 0
+        ]
+
         entry["cycles_median"] = (
             statistics.median(cycles) if cycles else None
         )
+        entry["stalls_backend_median"] = (
+            statistics.median(stalls) if stalls else None
+        )
+        entry["perf_mux_min"] = min(mux) if mux else None
         entry["instructions_median"] = (
             statistics.median(instructions)
             if instructions
@@ -299,6 +325,16 @@ def summarize(rows):
             if (
                 entry["cycles_median"]
                 and entry["instructions_median"]
+            )
+            else None
+        )
+
+        # The headline number for a latency-bound argument.
+        entry["backend_stall_frac"] = (
+            entry["stalls_backend_median"] / entry["cycles_median"]
+            if (
+                entry["cycles_median"]
+                and entry["stalls_backend_median"] is not None
             )
             else None
         )
@@ -325,7 +361,11 @@ def _is_baseline(
     baseline_build=None,
 ):
     """Check whether a summary entry supplies the speedup denominator."""
-    _, build, _, kernel, _ = key
+    _, build, _, kernel, _, threads = key
+
+    # A parallel run is a different experiment, never the denominator.
+    if threads != 1:
+        return False
 
     if baseline_kernel is not None:
         return (
@@ -350,7 +390,7 @@ def add_speedups(
     # If a baseline appears in a tunable sweep, always prefer the default
     # cflags variant so the denominator remains fixed.
     for key, entry in sorted(summary.items()):
-        label, build, cflags, _, dtype = key
+        label, build, cflags, _, dtype = key[:5]
 
         if not _is_baseline(
             key,
@@ -380,7 +420,7 @@ def add_speedups(
     missing = set()
 
     for key, entry in summary.items():
-        label, build, _, _, dtype = key
+        label, build, _, _, dtype = key[:5]
 
         same_base = same_build_base_time.get(
             (label, build, dtype)
@@ -439,7 +479,31 @@ def add_speedups(
                 lo > 1.0 or hi < 1.0
             )
 
+    _add_thread_scaling(summary)
+
     return missing
+
+
+def _add_thread_scaling(summary):
+    """Attach OMP scaling against the same experiment run at one thread."""
+    single = {}
+
+    for key, entry in summary.items():
+        if key[5] == 1:
+            single[key[:5]] = entry["time_median"]
+
+    for key, entry in summary.items():
+        base = single.get(key[:5])
+
+        if not base or entry["time_median"] <= 0:
+            entry["speedup_vs_1thread"] = float("nan")
+            entry["parallel_efficiency"] = float("nan")
+            continue
+
+        scaling = base / entry["time_median"]
+
+        entry["speedup_vs_1thread"] = scaling
+        entry["parallel_efficiency"] = scaling / key[5]
 
 
 def _short_cflags(cflags):
@@ -458,6 +522,10 @@ def _short_cflags(cflags):
     )
 
 
+def _shape(entry):
+    return f"t{entry['threads']}" if entry["threads"] != 1 else "-"
+
+
 def print_table(
     summary,
     show_perf,
@@ -473,6 +541,7 @@ def print_table(
             key[1],
             key[3],
             key[2],
+            key[5],
         ),
     )
 
@@ -483,7 +552,7 @@ def print_table(
 
     header = (
         f"{'matrix':<20} {'bld':<4} {'arm':<14} "
-        f"{'kernel':<16} {'cflags':<18} {'dt':<4} "
+        f"{'kernel':<16} {'cflags':<18} {'dt':<4} {'shape':<6} "
         f"{'n':>3} {'median_ms':>10} {'spread':>7} "
         f"{'gops':>8} {'speedup':>8} {'95% CI':>15} "
         f"{'sig':>4} {tail} {'st':>5}"
@@ -505,7 +574,7 @@ def print_table(
     last_matrix = None
 
     for key in keys:
-        label, build, cflags, kernel, dtype = key
+        label, build, cflags, kernel, dtype = key[:5]
         entry = summary[key]
 
         if last_matrix is not None and label != last_matrix:
@@ -563,7 +632,7 @@ def print_table(
         print(
             f"{label:<20} {build:<4} {entry['arm']:<14} "
             f"{kernel:<16} {_short_cflags(cflags):<18} "
-            f"{dtype:<4} {entry['runs']:>3} "
+            f"{dtype:<4} {_shape(entry):<6} {entry['runs']:>3} "
             f"{entry['time_median'] * 1e3:>10.4f} "
             f"{spread_str:>7} {entry['gops_median']:>8.3f} "
             f"{speedup_str:>8} {ci_str:>15} "
@@ -580,6 +649,7 @@ def write_csv(summary, path):
             key[1],
             key[3],
             key[2],
+            key[5],
         ),
     )
 
@@ -593,6 +663,8 @@ def write_csv(summary, path):
             "kernel",
             "cflags",
             "dtype",
+            "threads",
+            "lmul",
             "runs",
             "time_median_s",
             "time_mean_s",
@@ -611,6 +683,8 @@ def write_csv(summary, path):
             "speedup_ci_hi",
             "speedup_significant",
             "speedup_vs_scalar_same_build",
+            "speedup_vs_1thread",
+            "parallel_efficiency",
             "nnz_c",
             "op_mean",
             "op_max",
@@ -618,6 +692,9 @@ def write_csv(summary, path):
             "cycles_median",
             "instructions_median",
             "ipc",
+            "stalls_backend_median",
+            "backend_stall_frac",
+            "perf_mux_min",
             "cycles_per_nnz_c",
             "march",
             "cc_version",
@@ -625,7 +702,7 @@ def write_csv(summary, path):
         ])
 
         for key in keys:
-            label, build, cflags, kernel, dtype = key
+            label, build, cflags, kernel, dtype = key[:5]
             entry = summary[key]
 
             def opt(value, fmt="{:.4f}"):
@@ -658,6 +735,8 @@ def write_csv(summary, path):
                 kernel,
                 cflags,
                 dtype,
+                entry["threads"],
+                entry["lmul"],
                 entry["runs"],
                 f"{entry['time_median']:.9f}",
                 f"{entry['time_mean']:.9f}",
@@ -676,6 +755,8 @@ def write_csv(summary, path):
                 num(entry.get("speedup_hi")),
                 significant_str,
                 num(entry.get("speedup_same_build")),
+                num(entry.get("speedup_vs_1thread")),
+                num(entry.get("parallel_efficiency")),
                 entry["nnz_c"],
                 opt(entry["op_mean"], "{:.4f}"),
                 opt(entry["op_max"], "{:.0f}"),
@@ -683,6 +764,9 @@ def write_csv(summary, path):
                 opt(entry["cycles_median"], "{:.0f}"),
                 opt(entry["instructions_median"], "{:.0f}"),
                 opt(entry["ipc"], "{:.4f}"),
+                opt(entry["stalls_backend_median"], "{:.0f}"),
+                opt(entry["backend_stall_frac"], "{:.4f}"),
+                opt(entry["perf_mux_min"], "{:.4f}"),
                 opt(
                     entry["cycles_per_nnz_c"],
                     "{:.4f}",
@@ -839,7 +923,7 @@ def main():
         )
 
         for key, entry in sorted(not_significant):
-            label, build, cflags, kernel, dtype = key
+            label, build, cflags, kernel, dtype = key[:5]
 
             print(
                 f"    {label} / "
@@ -865,7 +949,7 @@ def main():
         )
 
         for key, entry in sorted(dirty):
-            label, build, cflags, kernel, _ = key
+            label, build, cflags, kernel, _ = key[:5]
 
             print(
                 f"    {label} / "
@@ -887,7 +971,7 @@ def main():
         )
 
         for key, entry in sorted(noisy):
-            label, build, cflags, kernel, _ = key
+            label, build, cflags, kernel, _ = key[:5]
 
             print(
                 f"    {label} / "

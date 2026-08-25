@@ -57,7 +57,7 @@ the kernels being scored against it have to be in the same raw CSV.
 The whole table runs by default. To run less:
 
 ```bash
-bash bench/run_bench.sh --kernels rvv_f32      # one kernel and its baseline
+bash bench/run_bench.sh --kernels rvv_f32_m2   # one kernel and its baseline
 bash bench/run_bench.sh --kernels intrinsic    # every row with that arm
 bash bench/run_bench.sh --dtype f32 --runs 30
 ```
@@ -107,7 +107,7 @@ row per cell of the sweep.
 arm        kernel       dtype  build  cflags
 baseline   scalar_f32   f32    gcv    -fno-tree-vectorize -fno-tree-slp-vectorize
 autovec    scalar_f32   f32    gcv    -
-intrinsic  rvv_f32      f32    gcv    -
+intrinsic  rvv_f32_m2   f32    gcv    -
 ```
 
 `arm` is what the row is evidence for, `kernel` must match a name in `bench.c`,
