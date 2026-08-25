@@ -606,7 +606,7 @@ def write_csv(summary, path):
             "gops_std",
             "gops_min",
             "gops_max",
-            "speedup_vs_gc_scalar",
+            "speedup_vs_baseline",
             "speedup_ci_lo",
             "speedup_ci_hi",
             "speedup_significant",

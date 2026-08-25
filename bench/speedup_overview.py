@@ -2,7 +2,6 @@
 """
 Speedup of the three RVV strategies (indexed, contiguous-run, adaptive) over the
 scalar baseline, per matrix, ordered by mean intermediate products per row.
-Excludes synthetic gen_ matrices.
 
 Usage:
     python3 speedup_overview.py [summary.csv]
@@ -29,22 +28,20 @@ def fnum(x):
 
 rows = []
 with open(CSV) as fh:
-    for r in csv.DictReader(fh, delimiter="\t"):
+    for r in csv.DictReader(fh):
         rows.append(r)
 
-real = [r for r in rows if not r["matrix"].startswith("gen_")]
-
 op_mean = {}
-for r in real:
+for r in rows:
     v = fnum(r["op_mean"])
     if v is not None:
         op_mean[r["matrix"]] = v
 
 def get(kern):
     d = {}
-    for r in real:
-        if r["kernel"] == kern and r["threads"] == "1":
-            s = fnum(r["speedup_vs_gc_scalar"])
+    for r in rows:
+        if r["kernel"] == kern:
+            s = fnum(r["speedup_vs_baseline"])
             if s is not None:
                 d[r["matrix"]] = s
     return d

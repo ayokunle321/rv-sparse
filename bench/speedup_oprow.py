@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Speedup of the RVV indexed kernel over scalar as a function of mean intermediate
-products per row (Op). Excludes synthetic gen_ matrices and failed-validation rows.
+products per row (Op). Excludes failed-validation rows.
 
 Usage:
     python3 speedup_vs_oprow.py [summary.csv]
@@ -28,16 +28,14 @@ def fnum(x):
 
 rows = []
 with open(CSV) as fh:
-    for r in csv.DictReader(fh, delimiter="\t"):
+    for r in csv.DictReader(fh):
         rows.append(r)
 
-real = [r for r in rows if not r["matrix"].startswith("gen_")]
-
 pts = []
-for r in real:
-    if r["kernel"] == "rvv_f32" and r["threads"] == "1" and r["status"] == "ok":
+for r in rows:
+    if r["kernel"] == "rvv_f32" and r["status"] == "ok":
         op = fnum(r["op_mean"])
-        s = fnum(r["speedup_vs_gc_scalar"])
+        s = fnum(r["speedup_vs_baseline"])
         if op is not None and s is not None:
             pts.append((op, s))
 
