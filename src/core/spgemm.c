@@ -14,7 +14,6 @@
 #include "../kernels/spgemm/rvsp_spgemm.h"
 
 /*
-/*
  * The one-shot fp32 path uses the descriptor API so structure analysis and
  * numeric execution share one implementation.
  */

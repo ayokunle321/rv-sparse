@@ -648,11 +648,13 @@ load_experiments() {
 Vector kernels require build 'gcv'."
         fi
 
+        # The dtype must appear as a suffix, or before a variant tag such as
+        # the LMUL in rvv_f32_m2.
         case "$kernel" in
-            *_"$dtype")
+            *_"$dtype"|*_"$dtype"_*)
                 ;;
             *)
-                die "$EXP_FILE row $n: kernel '$kernel' does not end in '_$dtype' — dtype column and kernel name disagree."
+                die "$EXP_FILE row $n: kernel '$kernel' does not contain '_$dtype' — dtype column and kernel name disagree."
                 ;;
         esac
 

@@ -89,8 +89,10 @@ extern "C"
         RVSP_SPGEMM_ALGO_RVV_M1,      /* gather and scatter, LMUL=1 */
         RVSP_SPGEMM_ALGO_RVV_M2,      /* gather and scatter, LMUL=2 */
         RVSP_SPGEMM_ALGO_RVV_M4,      /* gather and scatter, LMUL=4 */
-        RVSP_SPGEMM_ALGO_RVV = RVSP_SPGEMM_ALGO_RVV_M2,
-        RVSP_SPGEMM_ALGO_OMP          /* scalar, row loop over OpenMP threads */
+        RVSP_SPGEMM_ALGO_OMP,         /* scalar, row loop over OpenMP threads */
+
+        /* Alias, kept last so it cannot renumber what follows. */
+        RVSP_SPGEMM_ALGO_RVV = RVSP_SPGEMM_ALGO_RVV_M2
     } rvsp_spgemm_algo_t;
 
 #ifdef __cplusplus
