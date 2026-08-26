@@ -5,8 +5,8 @@
  *
  * Shared CSR test matrices with hand-computed products.
  *
- * Every pair is small enough to verify on paper, and each one targets a
- * different branch of the accumulate kernels. All inputs are canonical CSR.
+ * Each one targets a different branch of the accumulate kernels
+ * and all inputs are canonical CSR.
  */
 
 #ifndef RVSP_CSR_FIXTURES_H

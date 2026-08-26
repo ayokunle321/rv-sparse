@@ -475,11 +475,17 @@ static int build_from_genmat(
 }
 
 /* Convert parsed Matrix Market CSR values to the selected kernel dtype. */
+/*
+ * square forces cols = rows, for --mtx-sq. Inferring cols from the data drops
+ * empty trailing columns, which makes A*A dimensionally invalid on any matrix
+ * whose last columns are unoccupied.
+ */
 static int build_from_mtx(
     struct CSR *parsed,
     rvsp_dtype_t dtype,
     rvsp_csr_matrix_t *out,
-    raw_csr_t *raw) {
+    raw_csr_t *raw,
+    int square) {
 
     int32_t rows = (int32_t)vector_size(parsed->row_ptr) - 1;
     int32_t nnz  = (int32_t)vector_size(parsed->col_ind);
@@ -492,6 +498,18 @@ static int build_from_mtx(
     for (int32_t p = 0; p < nnz; p++)
         if (cidx[p] + 1 > cols)
             cols = cidx[p] + 1;
+
+    if (square) {
+        if (cols > rows) {
+            fprintf(stderr,
+                    "--mtx-sq: matrix is not square, a column index reaches "
+                    "%d but there are only %d rows\n",
+                    cols - 1, rows);
+            return -1;
+        }
+
+        cols = rows;
+    }
 
     raw->row_ptr = malloc((size_t)(rows + 1) * sizeof(int32_t));
     raw->col_idx = malloc((size_t)nnz * sizeof(int32_t));
@@ -721,8 +739,8 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        if (build_from_mtx(&pA, K->dtype, &A, &rawA) != RVSP_SUCCESS ||
-            build_from_mtx(&pB, K->dtype, &B, &rawB) != RVSP_SUCCESS) {
+        if (build_from_mtx(&pA, K->dtype, &A, &rawA, 0) != RVSP_SUCCESS ||
+            build_from_mtx(&pB, K->dtype, &B, &rawB, 0) != RVSP_SUCCESS) {
             fprintf(stderr, "build_from_mtx failed\n");
             return 1;
         }
@@ -734,7 +752,7 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        if (build_from_mtx(&pA, K->dtype, &A, &rawA) != RVSP_SUCCESS) {
+        if (build_from_mtx(&pA, K->dtype, &A, &rawA, 1) != RVSP_SUCCESS) {
             fprintf(stderr, "build_from_mtx failed\n");
             return 1;
         }

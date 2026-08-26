@@ -4,9 +4,6 @@
  * SPDX-License-Identifier: GPL-3.0-only
  *
  * Descriptor lifecycle, argument checking, and structure reuse.
- *
- * These are the contracts the header promises. They cost nothing to run and
- * they are the ones a refactor breaks silently.
  */
 
 #include <math.h>

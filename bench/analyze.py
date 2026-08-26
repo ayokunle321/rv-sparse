@@ -981,7 +981,7 @@ def main():
             )
 
     failures = [
-        key
+        (key, entry)
         for key, entry in summary.items()
         if entry["status"] == "FAIL"
     ]
@@ -989,11 +989,22 @@ def main():
     if failures:
         print("\n*** CORRECTNESS FAILURES ***")
 
-        for label, build, cflags, kernel, dtype in failures:
+        for key, entry in sorted(failures):
+            label, build, cflags, kernel, dtype = key[:5]
+
+            shape = []
+
+            if entry["threads"] != 1:
+                shape.append(f"t{entry['threads']}")
+
+            if entry.get("lmul"):
+                shape.append(f"m{entry['lmul']}")
+
             print(
                 f"    {label} / "
-                f"{kernel}@{build}[{_short_cflags(cflags)}] "
-                f"({dtype}) produced wrong output — perf number invalid"
+                f"{kernel}@{build}[{_short_cflags(cflags)}]"
+                f"{(' ' + ' '.join(shape)) if shape else ''} "
+                f"({dtype}) produced wrong output"
             )
 
     if csv_out:
