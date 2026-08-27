@@ -31,8 +31,13 @@ rv-sparse/
 │       ├── rvsp_symbolic.c       symbolic phases, shared
 │       ├── rvsp_support.c        buffer size query, canonical CSR check
 │       ├── gustavson_core_f32.inc   shared driver, not compiled alone
-│       ├── accum_scalar_f32.c    accumulate strategies, one per file
-│       ├── accum_rvv_f32.c
+│       ├── accum_scalar_f32.c    one accumulate loop per file
+│       ├── accum_scalar_omp_f32.c
+│       ├── accum_rvv_f32_m1.c
+│       ├── accum_rvv_f32_m2.c
+│       └── accum_rvv_f32_m4.c
+│
+├── paper/                        analysis, plots and the microbenchmark
 │
 ├── bench/                        benchmark harness
 │   ├── experiments.tsv           the experiment table
@@ -53,17 +58,22 @@ rv-sparse/
 └── docs/                         design notes and figures
 ```
 
-Build output goes to `obj/`, `lib/` and `bin/`. All three are gitignored and safe to delete.
+Build output goes to `build/`, which is gitignored and safe to delete.
 
 ## Notes
 
-All four SpGEMM strategies share the Gustavson driver in
-`gustavson_core_f32.inc` and differ only in the accumulate loop, each inlining
-it after defining `RVSP_KERNEL_NAME`. The symbolic phases live in
-`rvsp_symbolic.c` and are compiled once rather than per strategy.
+Every kernel shares the Gustavson driver in `gustavson_core_f32.inc` and
+differs only in the accumulate loop, each inlining the driver after defining
+`RVSP_KERNEL_NAME`. The symbolic phases live in `rvsp_symbolic.c` and are
+compiled once rather than per kernel.
+
+The three RVV kernels are the same gather, FMA and scatter at LMUL 1, 2 and 4.
+The OpenMP kernel puts the parallel region in the numeric function rather than
+in a one-shot entry point, so it needs one accumulator per thread.
 
 A scalar build contains no vector kernel. The vector sources require the V
-extension, and the Makefile excludes them when `-march` does not enable it.
+extension, and `CMakeLists.txt` excludes them when `RVSP_ARCH_FLAGS` does not
+enable it.
 
 The Matrix Market loader in `tools/` canonicalizes on load, sorting columns and
 summing duplicate entries.

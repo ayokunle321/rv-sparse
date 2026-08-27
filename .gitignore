@@ -49,3 +49,8 @@ bench/env.sh
 # Bench binaries, one per (build, cflags)
 bench/bench_*
 bench/csr_check
+
+# Paper drafts are exported from elsewhere; the artifacts in paper/ are the
+# record. paper/data and paper/figures are deliberately NOT ignored.
+/*.pdf
+paper/microbench/gather_scatter

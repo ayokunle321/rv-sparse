@@ -1,3 +1,12 @@
+/*
+ * Copyright (C) 2026 rv-sparse contributors
+ *
+ * SPDX-License-Identifier: GPL-3.0-only
+ *
+ * Matrix Market reader producing canonical CSR. Expands symmetric
+ * entries, sorts columns and folds duplicates on load.
+ */
+
 #include "mtx_to_csr_formatter.h"
 #include "vec.h"
 

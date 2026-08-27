@@ -1,3 +1,11 @@
+/*
+ * Copyright (C) 2026 rv-sparse contributors
+ *
+ * SPDX-License-Identifier: GPL-3.0-only
+ *
+ * Random sparse matrix generation directly into CSR form.
+ */
+
 #ifndef GENMAT_H
 #define GENMAT_H
 

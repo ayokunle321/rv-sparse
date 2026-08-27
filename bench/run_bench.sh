@@ -15,7 +15,6 @@
 #   baseline       scalar source, rv64gc
 #   autovec        same scalar source, rv64gcv
 #   intrinsic      handwritten RVV kernel
-#   scalar_unroll  manually unrolled scalar kernel
 #
 # The raw CSV records arm, build, march, cflags, and compiler version so each
 # measurement is self-describing.
@@ -332,7 +331,7 @@ preflight() {
     local missing=()
     local t
 
-    for t in make python3 awk flock mktemp; do
+    for t in cmake python3 awk flock mktemp; do
         command -v "$t" >/dev/null 2>&1 || missing+=("$t")
     done
 
@@ -512,25 +511,20 @@ if [ "$CHECK_MATRICES" = "1" ]; then
     b=gc
     march="$(build_march "$b")"
 
-    objdir="obj/$b"
-    libdir="lib/$b"
-    bindir="bin/$b"
-
-    tools_objs=(
-        "$objdir/tools/genmat.o"
-        "$objdir/tools/mtx_to_csr_formatter.o"
-        "$objdir/tools/vec.o"
-    )
+    builddir="build/csr_check"
 
     echo ">> building csr_check ($march)"
 
-    make CC="$CC" \
-        ARCH_FLAGS="$march" \
-        OBJ_DIR="$objdir" \
-        LIB_DIR="$libdir" \
-        BIN_DIR="$bindir" \
-        "$libdir/librvsparse.a" \
-        "${tools_objs[@]}" >/dev/null ||
+    cmake -S . -B "$builddir" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_C_COMPILER="$CC" \
+        -DRVSP_ARCH_FLAGS="$march" \
+        -DRVSP_BUILD_TESTS=OFF \
+        -DRVSP_BUILD_EXAMPLES=OFF \
+        >/dev/null ||
+        die "cmake configure failed"
+
+    cmake --build "$builddir" -j >/dev/null ||
         die "library build failed"
 
     "$CC" -Wall -Wextra -std=c11 \
@@ -540,8 +534,8 @@ if [ "$CHECK_MATRICES" = "1" ]; then
         $march \
         -O2 \
         bench/csr_check.c \
-        "${tools_objs[@]}" \
-        -L"$libdir" \
+        -L"$builddir" \
+        -lrvsparse_tools \
         -lrvsparse \
         -lm \
         -o bench/csr_check ||
@@ -904,49 +898,45 @@ build_all() {
 
     local march
     local extra
-    local objdir
-    local libdir
-    local bindir
+    local builddir
 
     march="$(build_march "$b")"
     extra=""
 
     [ "$cflags" != "-" ] && extra="$cflags"
 
-    # The OpenMP kernel source is gated in the Makefile. A row asks for it with
-    # -fopenmp in cflags, which also gives it its own build variant so the
+    # The OpenMP kernel source is gated in CMakeLists.txt. A row asks for it
+    # with -fopenmp in cflags, which also gives it its own build variant so the
     # baseline is never rebuilt with OpenMP enabled.
-    local openmp=0
+    local openmp=OFF
 
     case "$cflags" in
-        *-fopenmp*) openmp=1 ;;
+        *-fopenmp*) openmp=ON ;;
     esac
 
-    objdir="obj/$tag"
-    libdir="lib/$tag"
-    bindir="bin/$tag"
+    # One CMake build tree per (build, cflags) variant.
+    builddir="build/$tag"
 
-    echo ">> [$tag] building librvsparse.a ($march${extra:+ $extra})"
+    echo ">> [$tag] configuring ($march${extra:+ $extra})"
 
-    local tools_objs=(
-        "$objdir/tools/genmat.o"
-        "$objdir/tools/mtx_to_csr_formatter.o"
-        "$objdir/tools/vec.o"
-    )
+    cmake -S . -B "$builddir" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_C_COMPILER="$CC" \
+        -DRVSP_ARCH_FLAGS="$march $extra" \
+        -DRVSP_OPENMP="$openmp" \
+        -DRVSP_BUILD_TESTS=OFF \
+        -DRVSP_BUILD_EXAMPLES=OFF \
+        >/dev/null ||
+        die "[$tag] cmake configure failed"
 
-    make CC="$CC" \
-        ARCH_FLAGS="$march $extra" \
-        OPENMP="$openmp" \
-        OBJ_DIR="$objdir" \
-        LIB_DIR="$libdir" \
-        BIN_DIR="$bindir" \
-        "$libdir/librvsparse.a" \
-        "${tools_objs[@]}" >/dev/null ||
+    echo ">> [$tag] building librvsparse.a"
+
+    cmake --build "$builddir" -j >/dev/null ||
         die "[$tag] library build failed"
 
     local f
 
-    for f in "$libdir/librvsparse.a" "${tools_objs[@]}"; do
+    for f in "$builddir/librvsparse.a" "$builddir/librvsparse_tools.a"; do
         [ -f "$f" ] ||
             die "[$tag] expected build artifact missing: $f"
     done
@@ -964,8 +954,8 @@ build_all() {
         -O3 \
         $PERF_FLAG \
         bench/bench.c \
-        "${tools_objs[@]}" \
-        -L"$libdir" \
+        -L"$builddir" \
+        -lrvsparse_tools \
         -lrvsparse \
         -lm \
         -o "bench/bench_$tag" ||

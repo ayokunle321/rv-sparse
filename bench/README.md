@@ -38,15 +38,13 @@ python3 bench/analyze.py bench/results/spgemm_raw.csv --csv-out bench/results/su
 `spgemm_raw.csv` holds one row per timed run and is only ever appended to.
 `summary.csv` holds one row per config, with medians and confidence intervals.
 
-Optionally plot it. Both scripts read the summary and need matplotlib.
+Figures are produced separately, from `paper/`. Copy the summary across and
+run the plot scripts; see [paper/README.md](../paper/README.md).
 
 ```bash
-python3 bench/plots/speedup_overview.py
-python3 bench/plots/speedup_oprow.py
+cp bench/results/summary.csv paper/data/
+for f in paper/plots/*.py; do python3 "$f"; done
 ```
-
-Figures are written next to the summary, so `bench/results/`, which is
-gitignored. Pass a second argument to send them somewhere else.
 
 To reproduce a published table, run the sweep in one pass as above and
 summarise once. Speedups are computed within a single file, so the baseline and
@@ -124,8 +122,9 @@ silently vectorized and stop being a baseline. Use `-fno-vectorize
 
 ## Adding a kernel
 
-Build the kernel first, following the strategy guide in
-[CONTRIBUTING.md](../CONTRIBUTING.md). Then three edits put it in the sweep.
+Build the kernel first, following the pattern in
+[src/kernels/spgemm/README.md](../src/kernels/spgemm/README.md). Then three
+edits put it in the sweep.
 
 Register it in `bench.c`, guarding both the wrapper and the registry entry with
 `__riscv_vector` for a vector kernel. The last two registry fields are the
@@ -136,15 +135,19 @@ is checked against it, with a mismatch recorded as `correct=0`.
 #if defined(__riscv_vector)
 KERNEL_WRAP(mykernel_f32_w, rvsp_spgemm_mykernel_f32)
 static const kernel_entry_t KERNELS[] = {
-    { "mykernel_f32", mykernel_f32_w, RVSP_DTYPE_FP32, "f32",
-      scalar_f32_w, "scalar_f32" },
+    { "mykernel_f32", mykernel_f32_w, RVSP_SPGEMM_ALGO_MYKERNEL, 0,
+      RVSP_DTYPE_FP32, "f32", scalar_f32_w, "scalar_f32" },
 };
 #endif
 ```
 
+The fourth field is the LMUL, or 0 for a kernel that is not RVV. It feeds the
+`lmul` CSV column, so the sweep never parses it out of the kernel name.
+
 Add a row to `experiments.tsv`. If the kernel needs the V extension, add its
 name to `vector_kernel()` in `run_bench.sh` so a bad `gc` pairing fails before
-the sweep rather than at link time. Then smoke-test before committing to a long
+the sweep rather than at link time, and to the exclusion regex in
+`CMakeLists.txt`. Then smoke-test before committing to a long
 run.
 
 ```bash
@@ -167,7 +170,6 @@ run_bench.sh       preflight, build, sweep, resume
 bench.c            timing harness, one kernel on one product
 csr_check.c        canonical CSR check over the matrix set
 analyze.py         raw rows to summary with confidence intervals
-plots/             figures from the summary, needs matplotlib
 env.sh.example     per-machine config template
-results/           CSVs and figures, created on first run
+results/           CSVs, created on first run, gitignored
 ```

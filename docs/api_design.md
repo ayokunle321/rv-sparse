@@ -39,18 +39,32 @@ int owns_data;      /* set when the library allocated the arrays */
 
 ### rvsp_spgemm_algo_t
 
-This selects the accumulation strategy used by the descriptor API.
+This selects which kernel the descriptor API runs.
 
 ```c
 RVSP_SPGEMM_ALGO_DEFAULT    scalar
-RVSP_SPGEMM_ALGO_RVV        gather and scatter
+RVSP_SPGEMM_ALGO_RVV_M1     indexed gather and scatter, LMUL=1
+RVSP_SPGEMM_ALGO_RVV_M2     indexed gather and scatter, LMUL=2
+RVSP_SPGEMM_ALGO_RVV_M4     indexed gather and scatter, LMUL=4
+RVSP_SPGEMM_ALGO_OMP        scalar, row loop over OpenMP threads
 ```
 
-The three RVV strategies are available only in a vector build. Selecting one in
-a scalar build returns `RVSP_ERROR_UNSUPPORTED_BACKEND`.
+`RVSP_SPGEMM_ALGO_RVV` is an alias for `RVSP_SPGEMM_ALGO_RVV_M2`.
 
-All strategies produce the same output structure. Values can differ slightly
-in the last bits because vector accumulation can change the order of additions.
+The RVV algorithms are compiled only into a vector build, and the OpenMP one
+only when the library was built with `RVSP_OPENMP=ON`. Selecting an algorithm
+the build does not contain returns `RVSP_ERROR_UNSUPPORTED_BACKEND`.
+
+The OpenMP algorithm needs one accumulator per thread, so
+`rvsp_spgemm_work_estimation` reports a larger workspace for it. Set
+`OMP_NUM_THREADS` before the first call, because the thread count is read
+during estimation.
+
+Every algorithm produces the same output structure. Values can differ because
+the vector kernels fuse the multiply into the accumulate and the scalar kernel
+may not. On a well-conditioned product the difference is in the last bits; on
+one whose intermediate products cancel heavily, the two results can diverge
+without bound, and neither is meaningful in FP32.
 
 ## Matrix lifecycle
 
@@ -72,7 +86,7 @@ not allocate or copy any data.
 * `A` `[out]` matrix descriptor to initialize
 * `rows`, `cols`, `nnz` `[in]` matrix dimensions
 * `row_ptr`, `col_idx`, `values` `[in]` CSR arrays owned by the caller
-* `dtype` `[in]` element type. FP32 is currently supported
+* `dtype` `[in]` element type. FP32 is the only supported value
 
 Returns `RVSP_SUCCESS` on success, or `RVSP_ERROR_NULL_POINTER` or
 `RVSP_ERROR_INVALID_ARGUMENT` on failure.
@@ -130,13 +144,15 @@ The function sets `owns_data` for C, so release C with `rvsp_csr_destroy`.
 * `options` `[in]` backend and data type options
 
 The available backends are `RVSP_BACKEND_SCALAR` and
-`RVSP_BACKEND_RVV_INTRINSICS`. Both input and output data types must currently
-be FP32.
+`RVSP_BACKEND_RVV_INTRINSICS`. `RVSP_BACKEND_RVV_INTRINSICS` runs the LMUL=2
+kernel; use the descriptor API to select a different width.
 
-Returns `RVSP_SUCCESS` on success. It returns
-`RVSP_ERROR_UNSUPPORTED_BACKEND` when the requested backend or dtype is
-unavailable, or `RVSP_ERROR_INVALID_CSR` when an input matrix is not in
-canonical CSR format.
+FP32 is the only supported data type.
+
+Returns `RVSP_SUCCESS` on success. It returns `RVSP_ERROR_UNSUPPORTED_DTYPE`
+when either data type is not FP32, `RVSP_ERROR_UNSUPPORTED_BACKEND` when the
+requested backend is not in this build, or `RVSP_ERROR_INVALID_CSR` when an
+input matrix is not in canonical CSR format.
 
 ## Descriptor SpGEMM
 
@@ -175,19 +191,18 @@ rvsp_status_t rvsp_spgemm_set_algo(rvsp_spgemm_descr_t descr,
                                    rvsp_spgemm_algo_t algo);
 ```
 
-Selects the accumulation strategy for the descriptor.
+Selects which kernel the descriptor runs.
 
-Call this before `rvsp_spgemm_work_estimation` because the selected strategy
-is part of the analysis.
+Call this before `rvsp_spgemm_work_estimation` because the selected algorithm
+is part of the analysis and determines the workspace size.
 
 * `descr` `[in]` descriptor
-* `algo` `[in]` accumulation strategy
+* `algo` `[in]` algorithm
 
 Returns `RVSP_SUCCESS` on success.
 
 It returns `RVSP_ERROR_INVALID_ARGUMENT` if called after work estimation, or
-`RVSP_ERROR_UNSUPPORTED_BACKEND` if the strategy is not available in the
-current build.
+`RVSP_ERROR_UNSUPPORTED_BACKEND` if the algorithm is not in this build.
 
 ### rvsp_spgemm_work_estimation
 
@@ -274,8 +289,9 @@ The next call to `rvsp_spgemm_compute` will regenerate the column indices.
 * `RVSP_ERROR_NULL_POINTER` means a required pointer was NULL
 * `RVSP_ERROR_INVALID_ARGUMENT` means an argument was invalid or the API was
   used in the wrong order
-* `RVSP_ERROR_UNSUPPORTED_BACKEND` means the requested backend, strategy, or
-  dtype is not available
+* `RVSP_ERROR_UNSUPPORTED_BACKEND` means the requested backend or algorithm is
+  not in this build
+* `RVSP_ERROR_UNSUPPORTED_DTYPE` means the data type is not FP32
 * `RVSP_ERROR_INVALID_CSR` means the input matrix does not satisfy the required
   CSR format
 * `RVSP_ERROR_ALLOCATION_FAILED` means a memory allocation failed

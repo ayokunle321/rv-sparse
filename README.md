@@ -1,33 +1,40 @@
 # rv-sparse
 
-Sparse linear algebra for RISC-V. RV-Sparse computes CSR sparse matrix-matrix
-multiplication (SpGEMM), `C = A × B`, in FP32. It includes a scalar kernel and
-three RISC-V Vector (RVV) kernels.
+Sparse linear algebra for RISC-V. rv-sparse computes CSR sparse matrix-matrix
+multiplication (SpGEMM), `C = A × B`, in FP32.
+
+Five kernels share one Gustavson driver and differ only in how they accumulate.
+A scalar kernel, a hand-written RISC-V Vector (RVV) kernel using indexed
+gather and scatter at LMUL 1, 2 and 4, and a scalar kernel with the row loop
+parallelised over OpenMP threads.
 
 ## Build
 
-```bash
-make clean
-make
-```
-
-To cross-compile for RISC-V:
+CMake is the only build system.
 
 ```bash
-make TARGET_ARCH=riscv
+cmake -S . -B build
+cmake --build build -j
+ctest --test-dir build
 ```
 
-This selects the RISC-V toolchain and builds with
-`-march=rv64gcv -mabi=lp64d`.
-
-You can also select the target explicitly with `ARCH_FLAGS`:
+Select the target with `RVSP_ARCH_FLAGS`:
 
 ```bash
-make ARCH_FLAGS="-march=rv64gcv -mabi=lp64d"   # scalar and RVV kernels
-make ARCH_FLAGS="-march=rv64gc -mabi=lp64d"    # scalar kernel only
+cmake -S . -B build -DRVSP_ARCH_FLAGS="-march=rv64gcv -mabi=lp64d"  # scalar and RVV
+cmake -S . -B build -DRVSP_ARCH_FLAGS="-march=rv64gc -mabi=lp64d"   # scalar only
 ```
 
-The RVV kernels are built when the target enables the RISC-V Vector extension.
+The RVV kernels are compiled only when that string enables the vector
+extension, so a scalar build contains no vector code.
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `RVSP_ARCH_FLAGS` | `-march=native` | target ISA flags |
+| `RVSP_OPENMP` | `OFF` | build the OpenMP kernel |
+| `RVSP_LTO` | `ON` | link-time optimisation in release builds |
+| `RVSP_BUILD_TESTS` | `ON` | build and register the tests |
+| `RVSP_BUILD_EXAMPLES` | `ON` | build the examples |
 
 ## Usage
 
@@ -69,13 +76,15 @@ rvsp_csr_destroy(&C);
 releasing it with `rvsp_csr_destroy`.
 
 For repeated multiplies with the same sparsity pattern, use the descriptor API
-to reuse the structure analysis. It also allows a specific accumulation
-strategy to be selected.
+to reuse the structure analysis. It also selects which kernel runs, through
+`rvsp_spgemm_set_algo`.
 
 ## Documentation
 
 * [docs/api_design.md](docs/api_design.md) for the API reference
+* [docs/directory_structure.md](docs/directory_structure.md) for the layout
 * [examples/](examples/) for worked examples
+* [bench/README.md](bench/README.md) for the benchmark harness
 
 ## License
 
