@@ -8,26 +8,26 @@
 # cflags  extra compile flags, or -
 # threads OpenMP thread count, 1 for serial kernels
 #
-# Cells:
-#   A  baseline   scalar_f32, auto-vectorization off, 1 thread
-#   B  intrinsic  avx512_f32, the port of rvv_f32_m2, 1 thread
-#   C  omp        scalar_omp_f32, auto-vectorization off, thread sweep
+# Arms, as on RISC-V:
+#   baseline   scalar_f32, auto-vectorization off, 1 thread
+#   autovec    scalar_f32, the same source with the vectorizer on, 1 thread
+#   intrinsic  avx512_f32, the port of rvv_f32_m2, 1 thread
+#   omp        scalar_omp_f32, auto-vectorization off, 1 2 4 8 threads
 #
-# The intrinsic row keeps cflags "-" exactly as the RISC-V intrinsic rows do,
-# so the code around the hand-written loop is compiled the same way on both.
-# Unlike the RISC-V omp rows, the omp rows here also disable the vectorizer,
-# so cell C is the cell A source plus OpenMP and nothing else.
+# RISC-V also runs rvv_f32_m1 and rvv_f32_m4. AVX-512 has a fixed 16 fp32
+# lanes, the width of m2 at the X60's VLEN of 256, so those two have no
+# faithful x86 counterpart and are left out.
 #
-# Threads are pinned one per physical core by run_bench.sh; 64 fits within
-# one socket of 86 cores.
+# The autovec and intrinsic rows keep cflags "-" exactly as the RISC-V rows
+# do, and so share one build, as they do on RISC-V.
+# The omp rows use the same cflags and thread counts as the RISC-V omp rows.
+# Threads are pinned one per physical core by run_bench.sh.
 
 arm	kernel	dtype	build	cflags	threads
 baseline	scalar_f32	f32	native	-fno-tree-vectorize -fno-tree-slp-vectorize	1
+autovec	scalar_f32	f32	native	-	1
 intrinsic	avx512_f32	f32	native	-	1
 omp	scalar_omp_f32	f32	native	-fopenmp -fno-tree-vectorize -fno-tree-slp-vectorize	1
 omp	scalar_omp_f32	f32	native	-fopenmp -fno-tree-vectorize -fno-tree-slp-vectorize	2
 omp	scalar_omp_f32	f32	native	-fopenmp -fno-tree-vectorize -fno-tree-slp-vectorize	4
 omp	scalar_omp_f32	f32	native	-fopenmp -fno-tree-vectorize -fno-tree-slp-vectorize	8
-omp	scalar_omp_f32	f32	native	-fopenmp -fno-tree-vectorize -fno-tree-slp-vectorize	16
-omp	scalar_omp_f32	f32	native	-fopenmp -fno-tree-vectorize -fno-tree-slp-vectorize	32
-omp	scalar_omp_f32	f32	native	-fopenmp -fno-tree-vectorize -fno-tree-slp-vectorize	64

@@ -14,23 +14,102 @@ common/bench.c            timing harness, one kernel on one product
 common/csr_check.c        canonical CSR check over the matrix set
 common/analyze.py         raw rows to summary with confidence intervals
 common/tag_summary.py     adds machine, isa, compiler, flags columns
+common/check_disasm.sh    disassembly checks: scalar, vector, report
 riscv/run_bench.sh        RISC-V driver
 riscv/experiments.tsv     RISC-V experiment table
 riscv/env.sh.example      RISC-V per-machine config template
 intel/run_bench.sh        x86 driver, a port of the RISC-V one
 intel/experiments.tsv     x86 experiment table, cells A, B, C
 intel/env.sh.example      x86 per-machine config template
-intel/check_scalar_disasm.sh   proves a scalar build has no vector code
 <isa>/results/            CSVs, created on first run, gitignored
 ```
 
 On a board that ran the sweep before this split, move the old config and
-results into the RISC-V folder so resume keeps working:
+results into the RISC-V folder, then convert the raw CSV to the current
+columns (below):
 
 ```bash
 mv bench/env.sh bench/riscv/env.sh
 mv bench/results bench/riscv/results
+bash bench/riscv/run_bench.sh --migrate-csv
 ```
+
+## Pinning, disassembly checks, perf
+
+Both drivers record how every run was pinned in the raw CSV's `pinning`
+column, carried into the summary. Serial arms run under `taskset -c PIN_CORE`.
+The omp arm runs one thread per physical core with `OMP_PLACES=cores
+OMP_PROC_BIND=close`: on RISC-V under `taskset -c OMP_CPUS` (default `0-7`),
+so T threads take the first T of those cores; on x86 under `taskset` to the
+first hardware thread of T cores from `PIN_CORE`, which never includes an SMT
+sibling.
+
+Before a sweep, every build is disassembled with `common/check_disasm.sh`,
+by arm:
+
+| arm | check | fails when |
+| --- | --- | --- |
+| baseline, omp | scalar | the kernel has any vector instruction: any RVV `v*` on RISC-V; ymm, zmm, mask registers or packed xmm arithmetic on x86 |
+| intrinsic | vector | the kernel lacks the gather, FMA and scatter (`vluxei32` `vfmacc` `vsuxei32`, or `vgatherdps` `vfmadd` `vscatterdps`) |
+| autovec | report | never; lists what the compiler vectorized |
+
+On RISC-V a scalar check also refuses to pass if `OBJDUMP` cannot decode an
+instruction, and the preflight confirms `OBJDUMP` understands RVV.
+`--check-disasm` builds every variant, runs the checks and exits without
+benchmarking.
+
+With `PERF=1` the counter columns hold user-space counts for the calling
+thread. When the kernel refuses them, they stay empty and `perf_note` says
+why, e.g. `unavailable: Permission denied (perf_event_paranoid=4)`. `perf_note`
+is `off` when `PERF` is not set.
+
+Every timed run is checked against the scalar reference for its matrix.
+`correct` is 1 only when the structure matches exactly and every value is
+within `|c - ref| <= 1e-5 + 1e-4 |ref|`, and also no value is further off than
+float32 rounding can explain: `4 (k+1) 2^-24 sum|a_ik b_kj|`, with k the A row
+length. The run's `err_class` says which case it was: `exact`, `rounding`,
+`value` (beyond rounding, or NaN), `structural` (nnz, row_ptr or col_idx
+differ) or `failed` (the kernel returned an error), next to `tol_fail` (values
+outside the tolerance) and `max_rel_err` / `mean_rel_err` (`|c - ref| / |ref|`
+over entries with ref != 0). `analyze.py` prints these per matrix and kernel.
+A `value`, `structural` or `failed` run stops the sweep: its rows go to
+`results/rejected.csv` and nothing is appended. A `rounding` run outside the
+tolerance is recorded with `correct=0` and the sweep continues; that is the
+cancellation case seen on 2cubes_sphere, cop20k_A and offshore.
+
+Each warmup and each timed run is the same sequence: C's values are wiped to
+NaN, `compute()` runs, the result is validated. Only `compute()` is timed. The
+wipe means a kernel that stopped writing C fails instead of passing on the
+previous run's output, and validating after warmups too means the first timed
+run starts from the same cache state as the rest. `compute()` clears the
+accumulators only the first time it sees a workspace; every numeric pass
+leaves them zeroed, so the timed region no longer contains a serial memset of
+`b_cols x threads` floats.
+
+The harness exits with status 3, and the drivers stop the sweep, when a
+precondition for a trustworthy number fails:
+
+- A or B is not canonical CSR (checked at load with `rvsp_csr_check`);
+- no reference could be built;
+- the reference itself is further from a float64 product than rounding
+  allows, so the baseline is checked against something other than itself;
+- with `--verify-pinning`, which the drivers always pass, the binding is not
+  what was asked for: wrong OpenMP team size, a thread not bound to exactly
+  one CPU, two threads on one CPU, or two threads on SMT siblings. The probe
+  reads the real team and each thread's CPU and mask, and the result goes in
+  `team_size` and `bound_cpus`.
+
+The speedup denominator is the `baseline` arm. `--baseline NAME` narrows it to
+a kernel, and still takes that kernel's baseline-arm row when there is one, so
+the autovec build of the same `scalar_f32` source can never become the
+denominator. Two candidate denominators for one matrix is an error.
+
+The raw CSV gained `pinning`, `perf_note`, the four error columns and
+`warmup`, `git_commit` (with `-dirty` for uncommitted changes), `team_size`
+and `bound_cpus`. `--migrate-csv` converts an
+older RISC-V raw CSV: it backs the file up to `spgemm_raw.csv.pre-pinning.bak`,
+moves the old omp rows (which ran every thread on one core) to
+`spgemm_raw_omp_singlecore.csv`, and marks the remaining rows `unrecorded`.
 
 ## Running a sweep (RISC-V)
 
@@ -120,16 +199,12 @@ runs, reference check and resume rules as the RISC-V sweep.
 | Cell | arm | kernel | build | threads |
 | --- | --- | --- | --- | --- |
 | A | baseline | `scalar_f32` | `-march=native -fno-tree-vectorize -fno-tree-slp-vectorize` | 1 |
+| – | autovec | `scalar_f32` | `-march=native` | 1 |
 | B | intrinsic | `avx512_f32` | `-march=native` | 1 |
-| C | omp | `scalar_omp_f32` | `-march=native -fopenmp -fno-tree-vectorize -fno-tree-slp-vectorize` | 1 2 4 8 16 32 64 |
+| C | omp | `scalar_omp_f32` | `-march=native -fopenmp -fno-tree-vectorize -fno-tree-slp-vectorize` | 1 2 4 8 |
 
-`CC` must be GCC. Every build whose cflags disable the vectorizer is
-disassembled before it runs, and the sweep stops if its scalar kernel touches
-ymm, zmm or mask registers or does packed arithmetic.
-
-A run with T threads is restricted with `taskset` to the first hardware thread
-of T consecutive physical cores from `PIN_CORE` and runs with
-`OMP_PLACES=cores OMP_PROC_BIND=close`, so no two threads share a core.
+`CC` must be GCC. Cell C's cflags and thread counts match the RISC-V omp rows
+exactly.
 
 ```bash
 cp bench/intel/env.sh.example bench/intel/env.sh   # then set CC
@@ -139,10 +214,10 @@ bash bench/intel/run_bench.sh 2>&1 | tee -a bench/intel/results/run.log
 ```
 
 The driver summarises at the end. `results/summary.csv` has the RISC-V
-summary's schema, and `results/summary_tagged.csv` is the same with `machine`,
-`isa`, `compiler` and `flags` columns appended. `flags` is the exact compile
-line CMake used for each variant, and `env.txt` records the compiler banner,
-what `-march=native` resolved to, and the topology used for pinning.
+summary's schema, and `results/summary_tagged.csv` is the same with
+`machine`, `isa`, `compiler` and `flags` columns appended. `flags` is the exact compile line CMake used for each variant, and
+`env.txt` records the compiler banner, what `-march=native` resolved to, the
+pinning, and the perf counter status.
 
 To tag a RISC-V summary the same way so the two can be concatenated:
 

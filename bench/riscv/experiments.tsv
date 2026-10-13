@@ -20,6 +20,13 @@
 # Comparison:
 #   baseline vs autovec   compiler vectorisation
 #   baseline vs intrinsic hand-vectorised gather
+#   omp threads vs omp 1  parallel scaling of the baseline source
+#
+# The omp rows build the baseline source with OpenMP and the vectorizer off,
+# so they are the baseline plus threads and nothing else, and run_bench.sh
+# rejects the build if the kernel contains any RVV instruction. They run
+# pinned one thread per physical core: taskset -c OMP_CPUS (default 0-7) with
+# OMP_PLACES=cores OMP_PROC_BIND=close.
 
 arm	kernel	dtype	build	cflags	threads
 baseline	scalar_f32	f32	gcv	-fno-tree-vectorize -fno-tree-slp-vectorize	1
@@ -27,7 +34,7 @@ autovec	scalar_f32	f32	gcv	-	1
 intrinsic	rvv_f32_m1	f32	gcv	-	1
 intrinsic	rvv_f32_m2	f32	gcv	-	1
 intrinsic	rvv_f32_m4	f32	gcv	-	1
-omp	scalar_omp_f32	f32	gcv	-fopenmp	1
-omp	scalar_omp_f32	f32	gcv	-fopenmp	2
-omp	scalar_omp_f32	f32	gcv	-fopenmp	4
-omp	scalar_omp_f32	f32	gcv	-fopenmp	8
+omp	scalar_omp_f32	f32	gcv	-fopenmp -fno-tree-vectorize -fno-tree-slp-vectorize	1
+omp	scalar_omp_f32	f32	gcv	-fopenmp -fno-tree-vectorize -fno-tree-slp-vectorize	2
+omp	scalar_omp_f32	f32	gcv	-fopenmp -fno-tree-vectorize -fno-tree-slp-vectorize	4
+omp	scalar_omp_f32	f32	gcv	-fopenmp -fno-tree-vectorize -fno-tree-slp-vectorize	8

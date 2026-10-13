@@ -13,7 +13,8 @@
  *     (--gen R C DENSITY SEED | --mtx A.mtx B.mtx | --mtx-sq M.mtx) \
  *     [--runs N] [--warmup W] [--label TAG] [--header] \
  *     [--arm ARM] [--build TAG] [--march FLAGS] [--cflags FLAGS] \
- *     [--cc-version VER]
+ *     [--cc-version VER] [--pinning DESC] [--git-commit REV]
+ *     [--verify-pinning]
  *
  * Input modes:
  *   --gen R C DENSITY SEED   Generate synthetic CSR matrices.
@@ -21,7 +22,14 @@
  *   --mtx-sq M.mtx          Benchmark M * M.
  *
  * Build metadata is supplied by the caller and recorded in the CSV so
- * results from different binaries can share the same dataset.
+ * results from different binaries can share the same dataset. --pinning
+ * describes how the caller meant to pin the process and its threads;
+ * --verify-pinning makes the harness check that intent against what the OS
+ * and OpenMP actually did, and refuse to run if they differ.
+ *
+ * Exit status 3 means a precondition for a trustworthy result failed: input
+ * not canonical CSR, no reference, the reference failing its float64 check,
+ * or pinning not as intended. Drivers stop the sweep on it.
  */
 
 #define _POSIX_C_SOURCE 199309L /* clock_gettime / CLOCK_MONOTONIC */
@@ -34,16 +42,26 @@
 #include "vec.h"
 
 #include <math.h>
+#include <sched.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
+#if defined(_OPENMP)
+#include <omp.h>
+#endif
+
+/* Exit status for a failed precondition; drivers stop the sweep on it. */
+#define EXIT_PRECONDITION 3
+
 /*
  * Optional hardware counters. When enabled, counters cover only the
- * kernel call and are left blank when unavailable.
+ * kernel call and are left blank when unavailable. perf_note says which, so a
+ * blank counter column is never ambiguous.
  */
+static char perf_note[160] = "off";
 #ifdef USE_PERF
 #include <errno.h>
 #include <linux/perf_event.h>
@@ -91,15 +109,46 @@ static void perf_init(void) {
   perf_fd_stalls = perf_open_one(PERF_TYPE_HARDWARE,
                                  PERF_COUNT_HW_STALLED_CYCLES_BACKEND, -1);
 
+  const int err = errno;
+
   if (perf_fd_cycles < 0 || perf_fd_insns < 0)
     fprintf(stderr,
             "warning: perf counters unavailable (%s); "
             "cycles/instructions will be blank\n",
-            strerror(errno));
+            strerror(err));
 
   if (perf_fd_stalls < 0)
     fprintf(stderr, "warning: stalled-cycles-backend unavailable on this PMU; "
                     "the column will be blank\n");
+
+  if (perf_fd_cycles < 0 || perf_fd_insns < 0) {
+    int paranoid = -99;
+    FILE *f = fopen("/proc/sys/kernel/perf_event_paranoid", "r");
+
+    if (f) {
+      if (fscanf(f, "%d", &paranoid) != 1)
+        paranoid = -99;
+      fclose(f);
+    }
+
+    if (paranoid != -99)
+      snprintf(perf_note, sizeof(perf_note),
+               "unavailable: %s (perf_event_paranoid=%d)", strerror(err),
+               paranoid);
+    else
+      snprintf(perf_note, sizeof(perf_note), "unavailable: %s",
+               strerror(err));
+  } else if (perf_fd_stalls < 0) {
+    snprintf(perf_note, sizeof(perf_note),
+             "partial: stalls_backend unsupported by PMU");
+  } else {
+    snprintf(perf_note, sizeof(perf_note), "ok");
+  }
+
+  /* The note goes into a CSV field. */
+  for (char *c = perf_note; *c; c++)
+    if (*c == ',')
+      *c = ';';
 }
 
 static void perf_enable_one(int fd) {
@@ -417,6 +466,345 @@ static int csr_equal(const rvsp_csr_matrix_t *X, const rvsp_csr_matrix_t *Y,
   return ok;
 }
 
+/*
+ * Error against the reference, beyond the pass/fail tolerance above.
+ *
+ * Two float32 sums of the same k products, in any order and with or without
+ * FMA, can each be off from the exact value by about (k+1) * 2^-24 times the
+ * sum of the products' magnitudes, so they can differ by twice that. An entry
+ * further apart than 4 (k+1) 2^-24 sum|a*b|, double the bound for slack, is
+ * not rounding: something computed a different value. k is taken as the A
+ * row length, an upper bound on the products per entry.
+ *
+ *   exact       every value bitwise equal
+ *   rounding    values differ, all within the rounding bound
+ *   value       same structure, some value beyond the rounding bound or NaN
+ *   structural  nnz, row_ptr or col_idx differ
+ *   failed      the kernel call returned an error
+ *   noref       no reference could be built
+ *
+ * Relative error is |c - ref| / |ref| over entries with ref != 0; entries
+ * where ref == 0 are still covered by the bound.
+ */
+typedef struct {
+  long tol_fail;
+  double max_rel;
+  double mean_rel;
+  const char *cls;
+} err_stats_t;
+
+/*
+ * sum |a_ik * b_kj| for every entry of R, in R's order, and an independent
+ * check of R itself: the same product accumulated in float64, against which R
+ * must sit within the rounding bound. Without it the reference is only
+ * compared with itself, since the baseline kernel and the reference are the
+ * same scalar code. *ref_bad receives the number of R entries that fail.
+ * NULL on allocation failure.
+ */
+static float *term_magnitudes(const rvsp_csr_matrix_t *A,
+                              const rvsp_csr_matrix_t *B,
+                              const rvsp_csr_matrix_t *R, long *ref_bad) {
+  const size_t ncols = (size_t)(B->cols > 0 ? B->cols : 1);
+  double *acc = calloc(ncols, sizeof(double));
+  double *exact = calloc(ncols, sizeof(double));
+  float *mag = malloc((size_t)(R->nnz > 0 ? R->nnz : 1) * sizeof(float));
+
+  *ref_bad = 0;
+
+  if (!acc || !exact || !mag) {
+    free(acc);
+    free(exact);
+    free(mag);
+    return NULL;
+  }
+
+  const float *rv = (const float *)R->values;
+  const double u = ldexp(1.0, -24);
+
+  const float *av = (const float *)A->values;
+  const float *bv = (const float *)B->values;
+
+  for (int32_t i = 0; i < A->rows; i++) {
+    for (int32_t ap = A->row_ptr[i]; ap < A->row_ptr[i + 1]; ap++) {
+      const int32_t k = A->col_idx[ap];
+      const double a = fabs((double)av[ap]);
+
+      const double as = (double)av[ap];
+
+      for (int32_t bp = B->row_ptr[k]; bp < B->row_ptr[k + 1]; bp++) {
+        acc[B->col_idx[bp]] += a * fabs((double)bv[bp]);
+        exact[B->col_idx[bp]] += as * (double)bv[bp];
+      }
+    }
+
+    const double kterms = (double)(A->row_ptr[i + 1] - A->row_ptr[i]);
+
+    /* Every column the row touched is in R's structure, so this also
+     * clears acc for the next row. */
+    for (int32_t p = R->row_ptr[i]; p < R->row_ptr[i + 1]; p++) {
+      const int32_t j = R->col_idx[p];
+      const double d = fabs((double)rv[p] - exact[j]);
+
+      if (isnan(rv[p]) || d > 4.0 * (kterms + 1.0) * u * acc[j])
+        (*ref_bad)++;
+
+      mag[p] = (float)acc[j];
+      acc[j] = 0.0;
+      exact[j] = 0.0;
+    }
+  }
+
+  free(acc);
+  free(exact);
+  return mag;
+}
+
+/*
+ * What the OS and OpenMP actually did with the threads that will run the
+ * kernel. For an OpenMP kernel a probe region with the same ICVs reports the
+ * team size and each thread's CPU and affinity mask; the kernel's region gets
+ * the same team, and bound threads do not migrate. A serial kernel reports
+ * the main thread's affinity mask.
+ */
+typedef struct {
+  int team;
+  char cpus[512]; /* "0-7" or "0+2-3", no commas */
+  char problem[256];
+} binding_t;
+
+/* Ascending CPU list -> "0-3+8"; commas would split the CSV field. */
+static void cpu_ranges(const int *cpu, int n, char *out, size_t len) {
+  size_t pos = 0;
+  out[0] = '\0';
+
+  for (int i = 0; i < n && pos < len; i++) {
+    int j = i;
+    while (j + 1 < n && cpu[j + 1] == cpu[j] + 1)
+      j++;
+
+    int w = (j > i) ? snprintf(out + pos, len - pos, "%s%d-%d", pos ? "+" : "",
+                               cpu[i], cpu[j])
+                    : snprintf(out + pos, len - pos, "%s%d", pos ? "+" : "",
+                               cpu[i]);
+    if (w < 0)
+      break;
+    pos += (size_t)w;
+    i = j;
+  }
+}
+
+static int cmp_int(const void *a, const void *b) {
+  int x = *(const int *)a, y = *(const int *)b;
+  return (x > y) - (x < y);
+}
+
+/* 1 if cpu b is listed in cpu a's thread_siblings_list, 0 if not, -1 if the
+ * topology cannot be read. */
+static int smt_siblings(int a, int b) {
+  char path[128];
+  char buf[256];
+  snprintf(path, sizeof(path),
+           "/sys/devices/system/cpu/cpu%d/topology/thread_siblings_list", a);
+
+  FILE *f = fopen(path, "r");
+  if (!f)
+    return -1;
+
+  int ok = fgets(buf, sizeof(buf), f) != NULL;
+  fclose(f);
+  if (!ok)
+    return -1;
+
+  for (char *p = buf; *p;) {
+    char *end;
+    long lo = strtol(p, &end, 10);
+    if (end == p)
+      break;
+    long hi = lo;
+    if (*end == '-')
+      hi = strtol(end + 1, &end, 10);
+    if (b >= lo && b <= hi)
+      return 1;
+    p = (*end == ',') ? end + 1 : end;
+    if (*p == '\n')
+      break;
+  }
+
+  return 0;
+}
+
+static void probe_binding(int omp_kernel, int want_threads, binding_t *out) {
+  int cpu[1024];
+  int n = 0;
+  int unbound = 0;
+
+  out->team = 1;
+  out->problem[0] = '\0';
+
+#if defined(_OPENMP)
+  if (omp_kernel) {
+    int max = omp_get_max_threads();
+    int *seen = calloc((size_t)(max > 0 ? max : 1), sizeof(int));
+    int *masks = calloc((size_t)(max > 0 ? max : 1), sizeof(int));
+    int team = 0;
+
+    if (!seen || !masks) {
+      snprintf(out->problem, sizeof(out->problem), "probe allocation failed");
+      free(seen);
+      free(masks);
+      return;
+    }
+
+#pragma omp parallel
+    {
+      const int t = omp_get_thread_num();
+      cpu_set_t set;
+      CPU_ZERO(&set);
+
+#pragma omp single
+      team = omp_get_num_threads();
+
+      if (t < max) {
+        seen[t] = sched_getcpu();
+        masks[t] = sched_getaffinity(0, sizeof(set), &set) == 0
+                       ? CPU_COUNT(&set)
+                       : -1;
+      }
+    }
+
+    out->team = team;
+
+    for (int t = 0; t < team && t < max && n < 1024; t++) {
+      cpu[n++] = seen[t];
+      if (masks[t] != 1)
+        unbound++;
+    }
+
+    free(seen);
+    free(masks);
+  } else
+#endif
+  {
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    (void)omp_kernel;
+
+    if (sched_getaffinity(0, sizeof(set), &set) == 0) {
+      for (int c = 0; c < CPU_SETSIZE && n < 1024; c++)
+        if (CPU_ISSET(c, &set))
+          cpu[n++] = c;
+    }
+
+    if (n != 1)
+      unbound = 1;
+  }
+
+  qsort(cpu, (size_t)n, sizeof(int), cmp_int);
+  cpu_ranges(cpu, n, out->cpus, sizeof(out->cpus));
+
+  if (out->team != want_threads) {
+    snprintf(out->problem, sizeof(out->problem),
+             "team size %d but %d threads were requested", out->team,
+             want_threads);
+    return;
+  }
+
+  if (unbound) {
+    snprintf(out->problem, sizeof(out->problem),
+             "%s not bound to a single CPU (cpus %s)",
+             omp_kernel ? "some threads are" : "the process is", out->cpus);
+    return;
+  }
+
+  for (int i = 1; i < n; i++) {
+    if (cpu[i] == cpu[i - 1]) {
+      snprintf(out->problem, sizeof(out->problem),
+               "two threads share cpu %d (cpus %s)", cpu[i], out->cpus);
+      return;
+    }
+  }
+
+  for (int i = 0; i < n; i++) {
+    for (int j = i + 1; j < n; j++) {
+      int s = smt_siblings(cpu[i], cpu[j]);
+
+      if (s == 1) {
+        snprintf(out->problem, sizeof(out->problem),
+                 "cpus %d and %d are SMT siblings of one core", cpu[i],
+                 cpu[j]);
+        return;
+      }
+
+      if (s < 0) {
+        fprintf(stderr, "warning: cannot read SMT topology for cpu %d; "
+                        "sibling check skipped\n", cpu[i]);
+        i = n;
+        break;
+      }
+    }
+  }
+}
+
+static void err_stats(const rvsp_csr_matrix_t *C, const rvsp_csr_matrix_t *R,
+                      const rvsp_csr_matrix_t *A, const float *mag,
+                      err_stats_t *out) {
+  out->tol_fail = 0;
+  out->max_rel = 0.0;
+  out->mean_rel = 0.0;
+  out->cls = "structural";
+
+  if (C->rows != R->rows || C->cols != R->cols || C->nnz != R->nnz ||
+      memcmp(C->row_ptr, R->row_ptr, ((size_t)R->rows + 1) * sizeof(int32_t)) ||
+      memcmp(C->col_idx, R->col_idx, (size_t)R->nnz * sizeof(int32_t)))
+    return;
+
+  const float *cv = (const float *)C->values;
+  const float *rv = (const float *)R->values;
+  const double u = ldexp(1.0, -24);
+
+  long differ = 0;
+  long beyond = 0;
+  long counted = 0;
+  double sum_rel = 0.0;
+
+  for (int32_t i = 0; i < R->rows; i++) {
+    const double k = (double)(A->row_ptr[i + 1] - A->row_ptr[i]);
+
+    for (int32_t p = R->row_ptr[i]; p < R->row_ptr[i + 1]; p++) {
+      const float c = cv[p];
+      const float r = rv[p];
+
+      if (memcmp(&c, &r, sizeof(float)) != 0)
+        differ++;
+
+      if (isnan(c) || isnan(r)) {
+        beyond++;
+        out->tol_fail++;
+        continue;
+      }
+
+      if (!vals_close(cv, rv, p, p, RVSP_DTYPE_FP32))
+        out->tol_fail++;
+
+      const double d = fabs((double)c - (double)r);
+
+      if (d > 4.0 * (k + 1.0) * u * (double)mag[p])
+        beyond++;
+
+      if (r != 0.0f) {
+        const double rel = d / fabs((double)r);
+        if (rel > out->max_rel)
+          out->max_rel = rel;
+        sum_rel += rel;
+        counted++;
+      }
+    }
+  }
+
+  out->mean_rel = counted ? sum_rel / (double)counted : 0.0;
+  out->cls = beyond ? "value" : differ ? "rounding" : "exact";
+}
+
 /* Load inputs into typed CSR storage owned by the harness. */
 typedef struct {
   int32_t *row_ptr;
@@ -532,7 +920,9 @@ static void free_raw(raw_csr_t *raw) {
   "label,kernel,arm,build,march,cflags,cc_version,dtype,"                      \
   "rows,cols,nnz_a,nnz_b,nnz_c,flops,op_mean,op_max,op_var,"                   \
   "run,time_s,gops,correct,cycles,instructions,threads,"                       \
-  "stalls_backend,perf_mux,lmul"
+  "stalls_backend,perf_mux,lmul,pinning,perf_note,"                            \
+  "tol_fail,max_rel_err,mean_rel_err,err_class,"                               \
+  "warmup,git_commit,team_size,bound_cpus"
 
 static void usage(const char *prog) {
   fprintf(
@@ -542,7 +932,8 @@ static void usage(const char *prog) {
       "          [--runs N] [--warmup W] [--threads N] [--label TAG] "
       "[--header]\n"
       "          [--arm ARM] [--build TAG] [--march FLAGS] [--cflags FLAGS]\n"
-      "          [--cc-version VER]\n"
+      "          [--cc-version VER] [--pinning DESC] [--git-commit REV]\n"
+      "          [--verify-pinning]\n"
       "arms:    baseline autovec intrinsic\n"
       "kernels:\n",
       prog);
@@ -575,6 +966,9 @@ int main(int argc, char **argv) {
   const char *march = "-";
   const char *cc_version = "-";
   const char *cflags = "-";
+  const char *pinning = "-";
+  const char *git_commit = "-";
+  int verify_pinning = 0;
 
   int runs = 10;
   int warmup = 3;
@@ -612,6 +1006,12 @@ int main(int argc, char **argv) {
       cflags = argv[++i];
     else if (!strcmp(argv[i], "--cc-version") && i + 1 < argc)
       cc_version = argv[++i];
+    else if (!strcmp(argv[i], "--pinning") && i + 1 < argc)
+      pinning = argv[++i];
+    else if (!strcmp(argv[i], "--git-commit") && i + 1 < argc)
+      git_commit = argv[++i];
+    else if (!strcmp(argv[i], "--verify-pinning"))
+      verify_pinning = 1;
     else if (!strcmp(argv[i], "--header"))
       header = 1;
     else if (!strcmp(argv[i], "--gen") && i + 4 < argc) {
@@ -640,7 +1040,9 @@ int main(int argc, char **argv) {
   if (reject_comma(label, "--label") || reject_comma(arm, "--arm") ||
       reject_comma(build, "--build") || reject_comma(march, "--march") ||
       reject_comma(cflags, "--cflags") ||
-      reject_comma(cc_version, "--cc-version"))
+      reject_comma(cc_version, "--cc-version") ||
+      reject_comma(pinning, "--pinning") ||
+      reject_comma(git_commit, "--git-commit"))
     return 2;
 
   if (!kernel_name || src == SRC_NONE) {
@@ -731,6 +1133,27 @@ int main(int argc, char **argv) {
       rvsp_csr_validate(&B) != RVSP_SUCCESS) {
     fprintf(stderr, "csr validate failed (A or B malformed)\n");
     return 1;
+  }
+
+  /* The vector kernels are only correct on canonical CSR: a repeated column
+   * in a row would put two lanes of one gather/scatter on the same
+   * accumulator and lose an update. The loader canonicalizes; this makes it
+   * a checked precondition rather than an assumption. */
+  {
+    const rvsp_csr_matrix_t *M[2] = {&A, &B};
+
+    for (int m = 0; m < 2; m++) {
+      int32_t bad_row = -1;
+      rvsp_csr_status_t cs =
+          rvsp_csr_check(M[m]->rows, M[m]->cols, M[m]->row_ptr,
+                         M[m]->col_idx, &bad_row);
+
+      if (cs != RVSP_CSR_OK) {
+        fprintf(stderr, "%s is not canonical CSR: %s (row %d)\n",
+                m ? "B" : "A", rvsp_csr_status_string(cs), (int)bad_row);
+        return EXIT_PRECONDITION;
+      }
+    }
   }
 
   /* Compute workload statistics outside the timed region. */
@@ -863,14 +1286,57 @@ int main(int argc, char **argv) {
     }
 
     if (!have_ref) {
-      fprintf(stderr, "warning: reference build failed, "
-                      "correctness will be reported as -1\n");
+      fprintf(stderr, "reference build failed: nothing to validate against\n");
+      return EXIT_PRECONDITION;
     }
   }
 
-  /* Warm up on the same path that will be timed. */
+  /* Rounding bound per reference entry and a float64 check of the
+   * reference, outside the timed region. */
+  long ref_bad = 0;
+  float *ref_mag = term_magnitudes(&A, &B, &Cref, &ref_bad);
+
+  if (!ref_mag) {
+    fprintf(stderr, "term magnitude allocation failed\n");
+    return 1;
+  }
+
+  if (ref_bad > 0) {
+    fprintf(stderr,
+            "reference %s fails its float64 check: %ld of %d entries are "
+            "further from the exact product than rounding allows\n",
+            K->ref_name, ref_bad, Cref.nnz);
+    return EXIT_PRECONDITION;
+  }
+
+  /* Check the binding before any measured work. */
+  binding_t bind;
+  probe_binding(K->algo == RVSP_SPGEMM_ALGO_OMP, threads, &bind);
+
+  if (bind.problem[0]) {
+    fprintf(stderr, "%s: %s\n",
+            verify_pinning ? "pinning not as intended" : "warning: pinning",
+            bind.problem);
+
+    if (verify_pinning)
+      return EXIT_PRECONDITION;
+  }
+
+  /*
+   * Every iteration, warmup or timed, does the same three things: wipe C's
+   * values to NaN, run compute(), validate. The wipe means a kernel that
+   * stops writing C cannot pass on the previous run's values, and doing the
+   * same work around warmups as around timed runs means run 0 starts from
+   * the same cache state as every later run.
+   */
+  const size_t c_val_bytes = (size_t)(c_nnz > 0 ? c_nnz : 1) * sizeof(float);
+
   for (int w = 0; w < warmup; w++) {
+    err_stats_t ws_es;
+    memset(C.values, 0xFF, c_val_bytes); /* all-ones is a NaN */
     rvsp_spgemm_compute(descr, &A, &B, &C, ws);
+    err_stats(&C, &Cref, &A, ref_mag, &ws_es);
+    (void)csr_equal(&C, &Cref, K->dtype);
   }
 
   /* Timed runs. */
@@ -881,6 +1347,8 @@ int main(int argc, char **argv) {
     long long insns = -1;
     long long stalls = -1;
     double mux = -1.0;
+
+    memset(C.values, 0xFF, c_val_bytes); /* all-ones is a NaN */
 
     perf_start();
 
@@ -895,10 +1363,18 @@ int main(int argc, char **argv) {
     double dt = t1 - t0;
     int correct = 0;
     int32_t nnz_c = 0;
+    err_stats_t es = {0, 0.0, 0.0, "failed"};
 
     if (st == RVSP_SUCCESS) {
       nnz_c = C.nnz;
-      correct = have_ref ? csr_equal(&C, &Cref, K->dtype) : -1;
+
+      err_stats(&C, &Cref, &A, ref_mag, &es);
+
+      /* Within tolerance is not enough: a structural or beyond-rounding
+       * difference is a wrong answer. */
+      correct = csr_equal(&C, &Cref, K->dtype) &&
+                strcmp(es.cls, "structural") != 0 &&
+                strcmp(es.cls, "value") != 0;
     }
 
     double gops = (dt > 0.0) ? (flops / dt) / 1e9 : 0.0;
@@ -934,9 +1410,20 @@ int main(int argc, char **argv) {
 
     /* Blank for kernels that are not RVV. */
     if (K->lmul > 0)
-      printf("%d\n", K->lmul);
+      printf("%d,", K->lmul);
     else
-      printf("\n");
+      printf(",");
+
+    printf("%s,%s,", pinning, perf_note);
+
+    if (!strcmp(es.cls, "exact") || !strcmp(es.cls, "rounding") ||
+        !strcmp(es.cls, "value"))
+      printf("%ld,%.3e,%.3e,%s", es.tol_fail, es.max_rel, es.mean_rel,
+             es.cls);
+    else
+      printf(",,,%s", es.cls);
+
+    printf(",%d,%s,%d,%s\n", warmup, git_commit, bind.team, bind.cpus);
 
     fflush(stdout);
   }
@@ -952,6 +1439,7 @@ int main(int argc, char **argv) {
 
   free(ws);
   free(op_counts);
+  free(ref_mag);
 
   if (have_ref)
     rvsp_csr_destroy(&Cref);

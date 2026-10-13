@@ -32,6 +32,12 @@ struct rvsp_spgemm_descr {
   /* The C->col_idx the most recent fill wrote into, for reuse detection. */
   const int32_t *filled_into;
 
+  /* The workspace whose accumulators are known to be zero. Every numeric pass
+   * leaves acc zeroed, so a workspace only needs clearing the first time it
+   * is seen; clearing it on every call would put a serial memset of
+   * b_cols * nthreads floats inside each numeric phase. */
+  const void *acc_zeroed;
+
   /* Input dimensions captured at estimation, checked again at compute. */
   int32_t a_rows, a_cols, a_nnz;
   int32_t b_rows, b_cols, b_nnz;
@@ -131,6 +137,7 @@ rvsp_status_t rvsp_spgemm_set_algo(rvsp_spgemm_descr_t descr,
 void rvsp_spgemm_invalidate_structure(rvsp_spgemm_descr_t descr) {
   if (descr != NULL) {
     descr->filled_into = NULL;
+    descr->acc_zeroed = NULL;
   }
 }
 
@@ -183,6 +190,7 @@ rvsp_status_t rvsp_spgemm_work_estimation(rvsp_spgemm_descr_t descr,
   descr->c_row_ptr = NULL;
   descr->op_counts = NULL;
   descr->filled_into = NULL;
+  descr->acc_zeroed = NULL;
   descr->estimated = 0;
   descr->c_nnz = 0;
 
@@ -333,15 +341,19 @@ rvsp_status_t rvsp_spgemm_compute(rvsp_spgemm_descr_t descr,
     descr->filled_into = C->col_idx;
   }
 
+  if (descr->acc_zeroed != workspace) {
 #if defined(_OPENMP)
-  if (descr->algo == RVSP_SPGEMM_ALGO_OMP) {
-    memset(ws.acc, 0,
-           (size_t)descr->b_cols * (size_t)omp_get_max_threads() *
-               sizeof(float));
-  } else
+    if (descr->algo == RVSP_SPGEMM_ALGO_OMP) {
+      memset(ws.acc, 0,
+             (size_t)descr->b_cols * (size_t)omp_get_max_threads() *
+                 sizeof(float));
+    } else
 #endif
-  {
-    memset(ws.acc, 0, (size_t)descr->b_cols * sizeof(float));
+    {
+      memset(ws.acc, 0, (size_t)descr->b_cols * sizeof(float));
+    }
+
+    descr->acc_zeroed = workspace;
   }
 
   numeric(descr->a_rows, descr->b_cols, A->row_ptr, A->col_idx,

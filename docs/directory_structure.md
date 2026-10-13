@@ -51,7 +51,8 @@ rv-sparse/
 │   │   ├── bench.c               timing harness
 │   │   ├── csr_check.c           input validator
 │   │   ├── analyze.py            statistics
-│   │   └── tag_summary.py        machine, isa, compiler, flags columns
+│   │   ├── tag_summary.py        machine, isa, compiler, flags columns
+│   │   └── check_disasm.sh       vector/scalar checks on built kernels
 │   ├── riscv/                    SpacemiT X60 driver
 │   │   ├── run_bench.sh
 │   │   ├── experiments.tsv
@@ -59,8 +60,7 @@ rv-sparse/
 │   └── intel/                    x86 driver
 │       ├── run_bench.sh
 │       ├── experiments.tsv
-│       ├── env.sh.example
-│       └── check_scalar_disasm.sh
+│       └── env.sh.example
 │
 ├── tools/                        matrix generation and loading
 │   ├── include/

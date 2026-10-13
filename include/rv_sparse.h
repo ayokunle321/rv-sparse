@@ -105,6 +105,10 @@ rvsp_status_t rvsp_spgemm_work_estimation(rvsp_spgemm_descr_t descr,
  * workspace must provide at least workspace_bytes bytes.
  *
  * Repeated calls with the same input structure reuse the analyzed structure.
+ * The workspace's accumulators are cleared the first time a workspace is
+ * passed and are left zeroed by every call, so the same workspace can be
+ * passed again without clearing. Call rvsp_spgemm_invalidate_structure()
+ * after writing to the workspace between calls.
  */
 rvsp_status_t rvsp_spgemm_compute(rvsp_spgemm_descr_t descr,
                                   const rvsp_csr_matrix_t *A,
@@ -123,7 +127,8 @@ rvsp_status_t rvsp_spgemm_get_op_counts(rvsp_spgemm_descr_t descr,
 /*
  * Invalidates the cached output structure while retaining the analysis.
  *
- * The next compute() repopulates C's column indices.
+ * The next compute() repopulates C's column indices and clears the
+ * workspace's accumulators.
  */
 void rvsp_spgemm_invalidate_structure(rvsp_spgemm_descr_t descr);
 

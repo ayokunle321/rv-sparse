@@ -5,6 +5,9 @@ Takes a summary.csv from analyze.py, keeps every column as it is, and appends
 four columns so summaries from different machines can be concatenated and
 compared side by side.
 
+A summary from before the pinning, perf_note, error and provenance columns
+gets them, set to "unrecorded", so it still lines up with a newer one.
+
 flags is the exact compile line of each row's build variant when a
 variants.tsv (written by bench/intel/run_bench.sh) is given, matched on build
 and cflags. Without one, flags is --base-flags followed by the row's cflags.
@@ -13,7 +16,7 @@ Usage:
     python3 bench/common/tag_summary.py bench/intel/results/summary.csv \\
         --out bench/intel/results/summary_tagged.csv \\
         --machine "Intel Xeon 6787P" --isa "x86_64 AVX-512" \\
-        --compiler "gcc-14 (Ubuntu 14.2.0-4ubuntu2~24.04) 14.2.0" \\
+        --compiler "gcc-16 (GCC) 16.1.0" \\
         --variants bench/intel/results/variants.tsv
 
     # A RISC-V summary, whose runs predate variants.tsv:
@@ -29,6 +32,13 @@ import csv
 import sys
 
 NEW_COLUMNS = ["machine", "isa", "compiler", "flags"]
+
+# Columns analyze.py gained later; older summaries get them filled.
+LATER_COLUMNS = [
+    "pinning", "perf_note",
+    "tol_fail", "max_rel_err", "mean_rel_err", "err_class",
+    "warmup", "git_commit", "team_size", "bound_cpus",
+]
 
 
 def load_variants(path):
@@ -63,6 +73,12 @@ def main():
 
     if clash:
         sys.exit(f"{args.summary} already has column(s) {clash}")
+
+    for col in LATER_COLUMNS:
+        if col not in fields:
+            fields.append(col)
+            for row in rows:
+                row[col] = "unrecorded"
 
     for row in rows:
         cflags = row.get("cflags", "-")

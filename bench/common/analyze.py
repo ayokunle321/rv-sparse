@@ -82,6 +82,16 @@ def load(path):
                 or NO_CFLAGS
             )
             row["cc_version"] = (row.get("cc_version") or "-").strip()
+            row["pinning"] = (row.get("pinning") or "-").strip()
+            row["perf_note"] = (row.get("perf_note") or "-").strip()
+            row["tol_fail"] = _fnum(row, "tol_fail", int)
+            row["max_rel_err"] = _fnum(row, "max_rel_err")
+            row["mean_rel_err"] = _fnum(row, "mean_rel_err")
+            row["err_class"] = (row.get("err_class") or "-").strip()
+            row["warmup"] = (row.get("warmup") or "-").strip()
+            row["git_commit"] = (row.get("git_commit") or "-").strip()
+            row["team_size"] = (row.get("team_size") or "-").strip()
+            row["bound_cpus"] = (row.get("bound_cpus") or "-").strip()
 
             try:
                 row["threads"] = int(row.get("threads") or 1)
@@ -191,6 +201,29 @@ def _bootstrap_speedup_ci(base_times, kernel_times):
     )
 
 
+def _one(rows_in_group, key):
+    """The group's value for a per-run label, or 'mixed' if runs disagree."""
+    values = {row[key] for row in rows_in_group}
+    return values.pop() if len(values) == 1 else "mixed"
+
+
+# Worst first. A group reports the worst class any of its runs had.
+ERR_CLASS_RANK = ["failed", "structural", "value", "rounding", "exact", "noref"]
+
+# Classes that are a wrong answer rather than float rounding.
+WRONG_CLASSES = {"failed", "structural", "value"}
+
+
+def _worst_class(rows_in_group):
+    classes = {row["err_class"] for row in rows_in_group}
+
+    for cls in ERR_CLASS_RANK:
+        if cls in classes:
+            return cls
+
+    return classes.pop() if len(classes) == 1 else "mixed"
+
+
 def summarize(rows):
     # cflags must remain part of the key: different compile-time tunables are
     # different binaries and must never be pooled together.
@@ -229,6 +262,29 @@ def summarize(rows):
             "lmul": rows_in_group[0]["lmul"],
             "march": rows_in_group[0]["march"],
             "cc_version": rows_in_group[0]["cc_version"],
+            "pinning": _one(rows_in_group, "pinning"),
+            "perf_note": _one(rows_in_group, "perf_note"),
+            "err_class": _worst_class(rows_in_group),
+            "warmup": _one(rows_in_group, "warmup"),
+            "git_commit": _one(rows_in_group, "git_commit"),
+            "team_size": _one(rows_in_group, "team_size"),
+            "bound_cpus": _one(rows_in_group, "bound_cpus"),
+            "tol_fail": max(
+                (r["tol_fail"] for r in rows_in_group if r["tol_fail"] is not None),
+                default=None,
+            ),
+            "max_rel_err": max(
+                (r["max_rel_err"] for r in rows_in_group if r["max_rel_err"] is not None),
+                default=None,
+            ),
+            "mean_rel_err": (
+                statistics.mean(
+                    r["mean_rel_err"] for r in rows_in_group
+                    if r["mean_rel_err"] is not None
+                )
+                if any(r["mean_rel_err"] is not None for r in rows_in_group)
+                else None
+            ),
             "runs": len(rows_in_group),
 
             # Retained internally for bootstrap resampling.
@@ -342,8 +398,16 @@ def _is_baseline(
     base_build,
     baseline_kernel=None,
     baseline_build=None,
+    kernels_with_baseline_arm=frozenset(),
 ):
-    """Check whether a summary entry supplies the speedup denominator."""
+    """Check whether a summary entry supplies the speedup denominator.
+
+    The denominator is chosen by arm, not by kernel name: the same scalar
+    kernel is built both as the baseline arm (vectorizer off) and as the
+    autovec arm, and only the baseline arm is the reference. --baseline NAME
+    narrows to that kernel, and still takes only its baseline-arm row when it
+    has one.
+    """
     _, build, _, kernel, _, threads = key
 
     # A parallel run is a different experiment, never the denominator.
@@ -351,10 +415,13 @@ def _is_baseline(
         return False
 
     if baseline_kernel is not None:
-        return (
-            kernel == baseline_kernel
-            and build == (baseline_build or base_build)
-        )
+        if kernel != baseline_kernel or build != (baseline_build or base_build):
+            return False
+
+        if kernel in kernels_with_baseline_arm:
+            return entry["arm"] == BASELINE_ARM
+
+        return True
 
     return entry["arm"] == BASELINE_ARM
 
@@ -369,36 +436,45 @@ def add_speedups(
     base_time = {}
     base_times = {}
     same_build_base_time = {}
+    base_source = {}
 
-    # If a baseline appears in a tunable sweep, always prefer the default
-    # cflags variant so the denominator remains fixed.
-    for key, entry in sorted(summary.items()):
-        label, build, cflags, _, dtype = key[:5]
+    kernels_with_baseline_arm = frozenset(
+        key[3] for key, entry in summary.items()
+        if entry["arm"] == BASELINE_ARM
+    )
 
-        if not _is_baseline(
+    def is_base(key, entry):
+        return _is_baseline(
             key,
             entry,
             base_build,
             baseline_kernel,
             baseline_build,
-        ):
+            kernels_with_baseline_arm,
+        )
+
+    # Exactly one denominator per matrix. Two candidates means the choice
+    # would be arbitrary, so refuse rather than pick one silently.
+    for key, entry in sorted(summary.items()):
+        label, build, cflags, kernel, dtype = key[:5]
+
+        if not is_base(key, entry):
             continue
 
-        same_key = (label, build, dtype)
         matrix_key = (label, dtype)
+        desc = f"{kernel}@{build}[{cflags}] arm={entry['arm']}"
 
-        if (
-            same_key not in same_build_base_time
-            or cflags == NO_CFLAGS
-        ):
-            same_build_base_time[same_key] = entry["time_median"]
+        if matrix_key in base_source:
+            sys.exit(
+                f"ambiguous speedup denominator for {label} ({dtype}): "
+                f"{base_source[matrix_key]} and {desc}. "
+                f"Use --baseline or remove one."
+            )
 
-        if (
-            matrix_key not in base_time
-            or cflags == NO_CFLAGS
-        ):
-            base_time[matrix_key] = entry["time_median"]
-            base_times[matrix_key] = entry["_times"]
+        base_source[matrix_key] = desc
+        same_build_base_time[(label, build, dtype)] = entry["time_median"]
+        base_time[matrix_key] = entry["time_median"]
+        base_times[matrix_key] = entry["_times"]
 
     missing = set()
 
@@ -433,13 +509,7 @@ def add_speedups(
         )
 
         if (
-            _is_baseline(
-                key,
-                entry,
-                base_build,
-                baseline_kernel,
-                baseline_build,
-            )
+            is_base(key, entry)
             and entry["time_median"] == base_median
         ):
             entry["speedup_lo"] = 1.0
@@ -680,6 +750,16 @@ def write_csv(summary, path):
             "march",
             "cc_version",
             "status",
+            "pinning",
+            "perf_note",
+            "tol_fail",
+            "max_rel_err",
+            "mean_rel_err",
+            "err_class",
+            "warmup",
+            "git_commit",
+            "team_size",
+            "bound_cpus",
         ])
 
         for key in keys:
@@ -755,9 +835,64 @@ def write_csv(summary, path):
                 entry["march"],
                 entry["cc_version"],
                 entry["status"],
+                entry["pinning"],
+                entry["perf_note"],
+                opt(entry["tol_fail"], "{:d}"),
+                opt(entry["max_rel_err"], "{:.3e}"),
+                opt(entry["mean_rel_err"], "{:.3e}"),
+                entry["err_class"],
+                entry["warmup"],
+                entry["git_commit"],
+                entry["team_size"],
+                entry["bound_cpus"],
             ])
 
     print(f"\nwrote summary csv -> {path}")
+
+
+def print_errors(summary):
+    """Per matrix and kernel: error against the scalar reference."""
+    have = [
+        (key, entry) for key, entry in summary.items()
+        if entry["err_class"] not in ("-", "unrecorded")
+    ]
+
+    if not have:
+        return
+
+    print("\nError vs scalar reference (relative error over entries with ref != 0;")
+    print("class is the worst over runs: exact < rounding < value < structural):")
+    print(
+        f"    {'matrix':<16} {'kernel':<16} {'thr':>3} {'class':<10} "
+        f"{'tol_fail':>8} {'max_rel':>10} {'mean_rel':>10}"
+    )
+
+    def fmt(value, spec):
+        return spec.format(value) if value is not None else "-"
+
+    for key, entry in sorted(have):
+        label, _, _, kernel = key[:4]
+        print(
+            f"    {label:<16} {kernel:<16} {entry['threads']:>3} "
+            f"{entry['err_class']:<10} {fmt(entry['tol_fail'], '{:d}'):>8} "
+            f"{fmt(entry['max_rel_err'], '{:.2e}'):>10} "
+            f"{fmt(entry['mean_rel_err'], '{:.2e}'):>10}"
+        )
+
+    wrong = [(k, e) for k, e in have if e["err_class"] in WRONG_CLASSES]
+
+    if wrong:
+        print(
+            "\n*** WRONG ANSWERS, NOT ROUNDING: structural or beyond-rounding "
+            "value errors. Do not use these results. ***"
+        )
+
+        for key, entry in sorted(wrong):
+            label, build, cflags, kernel = key[:4]
+            print(
+                f"    {label} / {kernel}@{build}[{_short_cflags(cflags)}] "
+                f"t{entry['threads']}: {entry['err_class']}"
+            )
 
 
 def main():
@@ -987,6 +1122,8 @@ def main():
                 f"{(' ' + ' '.join(shape)) if shape else ''} "
                 f"({dtype}) produced wrong output"
             )
+
+    print_errors(summary)
 
     if csv_out:
         write_csv(summary, csv_out)

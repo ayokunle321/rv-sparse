@@ -8,19 +8,24 @@
 # build-to-march mapping, and pinning: OpenMP threads get one physical core
 # each, never an SMT sibling.
 #
-# The experiment is three cells, one per arm:
+# The experiment has the RISC-V arms except the m1/m4 LMUL rows:
 #
-#   baseline       A  scalar source, auto-vectorization off, 1 thread
-#   intrinsic      B  AVX-512 port of the RVV LMUL=2 kernel, 1 thread
-#   omp            C  scalar source with OpenMP, auto-vectorization off,
-#                     threads 1 2 4 8 16 32 64
+#   baseline       scalar source, auto-vectorization off, 1 thread
+#   autovec        the same scalar source, vectorizer on, 1 thread
+#   intrinsic      AVX-512 port of the RVV LMUL=2 kernel, 1 thread
+#   omp            scalar source with OpenMP, auto-vectorization off,
+#                  threads 1 2 4 8 as on RISC-V
 #
-# Every scalar build is checked by disassembly before it runs: a build whose
-# scalar kernel contains ymm/zmm or packed arithmetic is rejected.
+# Every build is disassembled before it runs. Arms that claim to be scalar
+# (baseline, omp) fail the sweep if their kernel touches ymm, zmm or mask
+# registers or does packed arithmetic; the intrinsic arm fails unless its
+# kernel gathers, FMAs and scatters. --check-disasm does only this.
 #
-# Pinning: a run with T threads is restricted with taskset to the first
-# hardware thread of T consecutive physical cores starting at PIN_CORE, and
-# runs with OMP_PLACES=cores OMP_PROC_BIND=close, so each thread owns a core.
+# Pinning, recorded per run in the CSV's pinning column: serial arms run under
+# taskset -c PIN_CORE; an omp run with T threads is restricted with taskset to
+# the first hardware thread of T consecutive physical cores starting at
+# PIN_CORE, and runs with OMP_PLACES=cores OMP_PROC_BIND=close, so each thread
+# owns a core and no thread shares one with an SMT sibling.
 #
 # Setup:
 #   cp bench/intel/env.sh.example bench/intel/env.sh
@@ -32,6 +37,8 @@
 # Flags:
 #   --check                 preflight only
 #   --check-matrices        validate canonical CSR input matrices
+#   --check-disasm          build every variant and run the disassembly
+#                           checks, then exit without benchmarking
 #   --dtype f32             restrict by dtype; repeatable or comma-separated
 #   --kernels a,b           restrict by kernel name or arm
 #   --baseline NAME         baseline kernel for batch composition
@@ -60,9 +67,23 @@ die() {
     exit 1
 }
 
+# Start a CMake build directory from empty. Reusing one is unsafe: when the
+# compiler changes, CMake discards the cache and re-configures without the -D
+# options given on the command line, so a variant can silently build without
+# its flags or OpenMP. Only directories under build/intel/ are touched.
+fresh_builddir() {
+    case "$1" in
+        build/intel/?*) ;;
+        *) die "refusing to clear '$1': not under build/intel/" ;;
+    esac
+
+    rm -rf -- "$1" || die "could not clear $1"
+}
+
 # CLI
 CHECK_ONLY=0
 CHECK_MATRICES=0
+CHECK_DISASM=0
 DTYPE_FILTER=""
 KERNEL_FILTER=""
 RUNS_FLAG=""
@@ -89,6 +110,10 @@ while [ $# -gt 0 ]; do
             ;;
         --check-matrices)
             CHECK_MATRICES=1
+            shift
+            ;;
+        --check-disasm)
+            CHECK_DISASM=1
             shift
             ;;
         --dtype)
@@ -174,6 +199,17 @@ SHUFFLE="${SHUFFLE:-1}"
 SHUF_SEED="${SHUF_SEED:-$RANDOM}"
 NO_GOVERNOR="${NO_GOVERNOR:-0}"
 MACHINE="${MACHINE:-}"
+OBJDUMP="${OBJDUMP:-objdump}"
+export OBJDUMP
+
+# The code version every row was measured with; -dirty when tracked files
+# have uncommitted changes.
+GIT_COMMIT="$(git -C "$REPO_ROOT" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
+
+if [ "$GIT_COMMIT" != "unknown" ] &&
+   [ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+    GIT_COMMIT="$GIT_COMMIT-dirty"
+fi
 
 MATRICES=(
     wiki-Vote
@@ -197,8 +233,8 @@ MATRICES=(
     webbase-1M
 )
 
-CSV_HEADER="label,kernel,arm,build,march,cflags,cc_version,dtype,rows,cols,nnz_a,nnz_b,nnz_c,flops,op_mean,op_max,op_var,run,time_s,gops,correct,cycles,instructions,threads,stalls_backend,perf_mux,lmul"
-CSV_NFIELDS=27
+CSV_HEADER="label,kernel,arm,build,march,cflags,cc_version,dtype,rows,cols,nnz_a,nnz_b,nnz_c,flops,op_mean,op_max,op_var,run,time_s,gops,correct,cycles,instructions,threads,stalls_backend,perf_mux,lmul,pinning,perf_note,tol_fail,max_rel_err,mean_rel_err,err_class,warmup,git_commit,team_size,bound_cpus"
+CSV_NFIELDS=37
 
 F_LABEL=1
 F_KERNEL=2
@@ -206,6 +242,7 @@ F_BUILD=4
 F_CFLAGS=6
 F_CORRECT=21
 F_THREADS=24
+F_ERRCLASS=33
 
 VALID_ARMS="baseline autovec intrinsic omp"
 VALID_BUILDS="native"
@@ -599,6 +636,7 @@ if [ "$CHECK_MATRICES" = "1" ]; then
     march="$(build_march "$b")"
 
     builddir="build/intel/csr_check"
+    fresh_builddir "$builddir"
 
     echo ">> building csr_check ($march)"
 
@@ -856,11 +894,12 @@ arms:    $VALID_ARMS"
     echo ">> experiment table: $EXP_FILE — $kept of $n rows selected${DTYPE_FILTER:+ (dtype: $DTYPE_FILTER)}${KERNEL_FILTER:+ (kernels: $KERNEL_FILTER)}"
 
     for ((i = 0; i < ${#EXP_ARM[@]}; i++)); do
-        printf '     %-14s %-17s %-4s %-4s %s\n' \
+        printf '     %-14s %-17s %-4s %-6s t%-3s %s\n' \
             "${EXP_ARM[i]}" \
             "${EXP_KERNEL[i]}" \
             "${EXP_DTYPE[i]}" \
             "${EXP_BUILD[i]}" \
+            "${EXP_THREADS[i]}" \
             "${EXP_CFLAGS[i]}"
     done
 }
@@ -999,6 +1038,7 @@ build_all() {
 
     # One CMake build tree per (build, cflags) variant.
     builddir="build/intel/$tag"
+    fresh_builddir "$builddir"
 
     echo ">> [$tag] configuring ($march${extra:+ $extra})"
 
@@ -1067,14 +1107,53 @@ for e in json.load(open(sys.argv[1])):
     VARIANT_FLAGS_LINES+=("$b"$'\t'"$cflags"$'\t'"$flags")
     echo "   [$tag] kernel flags: $flags"
 
-    # A scalar cell must contain no vector code. Variants built with the
-    # vectorizer on (the intrinsic cell) are not scalar cells.
-    case "$cflags" in
-        *-fno-tree-vectorize*)
-            bash "$BENCH_DIR/check_scalar_disasm.sh" "$BENCH_DIR/bench_$tag" ||
-                die "[$tag] scalar kernel is not scalar"
-            ;;
-    esac
+    check_variant_disasm "$tag"
+}
+
+# Disassembly checks for every experiment row built into this variant, by arm:
+#   baseline, omp   kernel must contain no vector instruction
+#   intrinsic       kernel must contain the gather, FMA and scatter
+#   autovec         vector content is reported, never fails
+check_variant_disasm() {
+    local tag="$1"
+    local bin="$BENCH_DIR/bench_$tag"
+    local i
+    local done_keys=""
+    local key
+    local prefix
+    local rc
+
+    for ((i = 0; i < ${#EXP_ARM[@]}; i++)); do
+        [ "$(exp_tag "$i")" = "$tag" ] || continue
+
+        key="${EXP_ARM[i]}:${EXP_KERNEL[i]}"
+        in_list "$key" "$done_keys" && continue
+        done_keys="$done_keys $key"
+
+        prefix="rvsp_spgemm_${EXP_KERNEL[i]}"
+
+        case "${EXP_ARM[i]}" in
+            baseline|omp)
+                bash bench/common/check_disasm.sh intel scalar "$bin" "$prefix"
+                rc=$?
+                ;;
+            intrinsic)
+                bash bench/common/check_disasm.sh intel vector "$bin" "$prefix" \
+                    vgatherdps vscatterdps vfmadd
+                rc=$?
+                ;;
+            autovec)
+                bash bench/common/check_disasm.sh intel report "$bin" "$prefix"
+                rc=$?
+                ;;
+            *)
+                rc=0
+                ;;
+        esac
+
+        [ "$rc" -eq 0 ] ||
+            die "[$tag] disassembly check failed for ${EXP_ARM[i]} ${EXP_KERNEL[i]} (rc=$rc)"
+    done
 }
 
 VARIANT_FLAGS_LINES=()
@@ -1083,11 +1162,20 @@ command -v taskset >/dev/null 2>&1 ||
     die "taskset not found; the Intel arm requires pinning"
 
 RUNNER="taskset -c $PIN_CORE"
-echo ">> pinning: 1 thread on cpu $PIN_CORE; T threads on T physical cores from cpu $PIN_CORE (OMP_PLACES=cores OMP_PROC_BIND=close)"
+echo ">> pinning: serial arms on cpu $PIN_CORE; omp with T threads on T physical cores from cpu $PIN_CORE (OMP_PLACES=cores OMP_PROC_BIND=close)"
 
-# Pinning for a T-thread run.
-runner_for() {
-    echo "taskset -c $(cpu_list "$1")"
+# "0,1,2,3,8" -> "0-3+8", for the CSV, where commas are field separators.
+cpu_ranges() {
+    awk -F, '{
+        out = ""
+        start = prev = $1
+        for (i = 2; i <= NF + 1; i++) {
+            if (i <= NF && $i == prev + 1) { prev = $i; continue }
+            out = out (out == "" ? "" : "+") (start == prev ? start : start "-" prev)
+            if (i <= NF) start = prev = $i
+        }
+        print out
+    }' <<< "$1"
 }
 
 # Validate each binary before the real sweep using a tiny configuration.
@@ -1168,11 +1256,19 @@ for ((i = 0; i < ${#VARIANT_TAG[@]}; i++)); do
         "${VARIANT_CFLAGS[i]}" \
         "${VARIANT_TAG[i]}"
 
+    [ "$CHECK_DISASM" = "1" ] && continue
+
     smoke_test \
         "${VARIANT_BUILD[i]}" \
         "${VARIANT_CFLAGS[i]}" \
         "${VARIANT_TAG[i]}"
 done
+
+if [ "$CHECK_DISASM" = "1" ]; then
+    echo ""
+    echo ">> --check-disasm: every variant built and passed its disassembly checks; nothing was run."
+    exit 0
+fi
 
 # Record the flags of every variant so the summary can carry them.
 {
@@ -1195,7 +1291,9 @@ else
     existing_header="$(head -1 "$CSV")"
 
     if [ "$existing_header" != "$CSV_HEADER" ]; then
-        die "existing $CSV has a different header than expected."
+        die "existing $CSV has a different header than expected.
+Raw CSVs from before the pinning, perf_note and error columns cannot be appended to;
+start a fresh OUT_DIR."
     fi
 
     echo ">> appending to existing $CSV ($(( $(wc -l < "$CSV") - 1 )) rows)"
@@ -1235,13 +1333,16 @@ fi
     echo "uname: $(uname -srm)"
     echo "cc: $CC"
     echo "cc_version: $CC_VERSION"
+    echo "git_commit: $GIT_COMMIT"
     echo "cc_banner: $CC_BANNER"
     echo "machine: $MACHINE"
     echo "cpu_model: $CPU_MODEL"
     echo "native_march: ${NATIVE_MARCH:-unknown}"
     echo "smt: $(cat /sys/devices/system/cpu/smt/active 2>/dev/null || echo n/a) (1 = siblings online; runs use one thread per core)"
     echo "physical_cores: ${#PRIMARY_CPUS[@]}"
-    echo "omp: OMP_PLACES=cores OMP_PROC_BIND=close, taskset to primary cpus from $PIN_CORE"
+    echo "pinning: serial arms taskset -c $PIN_CORE; omp arm taskset to T primary cpus from $PIN_CORE, OMP_PLACES=cores OMP_PROC_BIND=close"
+    echo "objdump: $OBJDUMP ($("$OBJDUMP" --version 2>/dev/null | head -1))"
+    echo "perf: PERF=$PERF perf_event_paranoid=$(cat /proc/sys/kernel/perf_event_paranoid 2>/dev/null || echo n/a)"
 
     for ((i = 0; i < ${#VARIANT_TAG[@]}; i++)); do
         echo "variant[${VARIANT_TAG[i]}]: $(build_march "${VARIANT_BUILD[i]}") ${VARIANT_CFLAGS[i]} -O3 $PERF_FLAG"
@@ -1433,6 +1534,22 @@ run_config() {
     local march
     march="$(build_march "$b")"
 
+    # Serial arms run on PIN_CORE. An omp run gets T physical cores and OpenMP
+    # binds thread i to core i of them.
+    local -a pin_env=()
+    local pin_runner="$RUNNER"
+    local pin_desc="taskset=$PIN_CORE"
+
+    if [ "$arm" = "omp" ]; then
+        local cpus
+        cpus="$(cpu_list "$th")" ||
+            die "not enough physical cores from PIN_CORE=$PIN_CORE for $th threads"
+
+        pin_env=(OMP_PLACES=cores OMP_PROC_BIND=close)
+        pin_runner="taskset -c $cpus"
+        pin_desc="taskset=$(cpu_ranges "$cpus") places=cores bind=close"
+    fi
+
     local desc="$k@$b"
 
     [ "$cf" != "-" ] && desc="$k@$b[$cf]"
@@ -1473,8 +1590,7 @@ run_config() {
         tmp="$(mktemp "$OUT_DIR/.run_XXXXXX")"
         valid="$(mktemp "$OUT_DIR/.valid_XXXXXX")"
 
-        if OMP_NUM_THREADS="$th" OMP_PLACES=cores OMP_PROC_BIND=close \
-            $(runner_for "$th") "./$BENCH_DIR/bench_$tag" \
+        if env OMP_NUM_THREADS="$th" "${pin_env[@]}" $pin_runner "./$BENCH_DIR/bench_$tag" \
             --kernel "$k" \
             "$@" \
             --runs "$RUNS" \
@@ -1486,11 +1602,24 @@ run_config() {
             --cflags "$cf" \
             --threads "$th" \
             --cc-version "$CC_VERSION" \
+            --pinning "$pin_desc" \
+            --git-commit "$GIT_COMMIT" \
+            --verify-pinning \
             > "$tmp" \
             2>"$tmp.err"; then
             :
         else
             rc=$?
+
+            # Exit 3 is a failed precondition (input not canonical, no or bad
+            # reference, pinning not as intended). Retrying cannot fix it, and
+            # carrying on would measure something other than intended.
+            if [ "$rc" -eq 3 ]; then
+                echo "   !! PRECONDITION FAILED: $label / $desc ($arm)" >&2
+                sed 's/^/      /' "$tmp.err" >&2
+                rm -f "$tmp" "$tmp.err" "$valid"
+                die "stopping: $label / $desc failed a precondition (see above). Nothing appended to $CSV."
+            fi
 
             echo "   !! failed (rc=$rc) — $label / $desc (attempt $attempt/$((RETRIES + 1))): $(head -1 "$tmp.err" 2>/dev/null)"
         fi
@@ -1504,6 +1633,22 @@ run_config() {
             "$valid"
 
         n="$(wc -l < "$valid" | tr -d ' ')"
+
+        # A structural, beyond-rounding or failed result is a wrong answer.
+        # Keep it out of the CSV, set it aside, and stop the sweep.
+        local wrong
+        wrong="$(awk -F, -v f="$F_ERRCLASS" \
+            '$f == "structural" || $f == "value" || $f == "failed" { print $f }' "$valid" |
+            sort | uniq -c | tr '\n' ' ')"
+
+        if [ -n "$wrong" ]; then
+            [ -f "$OUT_DIR/rejected.csv" ] || echo "$CSV_HEADER" > "$OUT_DIR/rejected.csv"
+            cat "$valid" >> "$OUT_DIR/rejected.csv"
+            echo "   !! WRONG ANSWER: $label / $desc ($arm): $wrong" >&2
+            echo "   !! the result differs from the scalar reference by more than rounding" >&2
+            rm -f "$tmp" "$tmp.err" "$valid"
+            die "stopping: $label / $desc is not rounding error. Rows saved to $OUT_DIR/rejected.csv, nothing appended to $CSV."
+        fi
 
         if [ "$n" -eq "$RUNS" ]; then
             atomic_append_csv "$valid"

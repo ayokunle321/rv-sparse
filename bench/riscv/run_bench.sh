@@ -19,10 +19,21 @@
 # The raw CSV records arm, build, march, cflags, and compiler version so each
 # measurement is self-describing.
 #
+# Pinning, recorded per run in the CSV's pinning column:
+#   - serial arms run under taskset -c PIN_CORE
+#   - the omp arm runs under taskset -c OMP_CPUS (default 0-7) with
+#     OMP_PLACES=cores OMP_PROC_BIND=close, so T threads take the first T
+#     cores of that set, one thread per physical core
+#
+# Every build is disassembled before it runs. Arms that claim to be scalar
+# (baseline, omp) fail the sweep if their kernel contains any RVV instruction;
+# the intrinsic arm fails unless its kernel gathers, FMAs and scatters; the
+# autovec arm's vector content is reported. --check-disasm does only this.
+#
 # Measurement controls:
 #   - exclusive lock and atomic CSV writes
 #   - smoke test for every build variant
-#   - performance governor when available
+#   - performance governor when available, on PIN_CORE and every OMP_CPUS core
 #   - frequency check before/after each config
 #   - randomized experiment order per matrix
 #
@@ -39,6 +50,10 @@
 # Flags:
 #   --check                 preflight only
 #   --check-matrices        validate canonical CSR input matrices
+#   --check-disasm          build every variant and run the disassembly
+#                           checks, then exit without benchmarking
+#   --migrate-csv           convert a raw CSV from before the pinning column
+#                           (see below), then exit
 #   --dtype f32             restrict by dtype; repeatable or comma-separated
 #   --kernels a,b           restrict by kernel name or arm
 #   --baseline NAME         baseline kernel for batch composition
@@ -52,6 +67,13 @@
 #   bash bench/riscv/run_bench.sh --kernels intrinsic --runs 30
 #
 # Everything else is configured in bench/riscv/env.sh.
+#
+# --migrate-csv: the raw CSV gained pinning, perf_note, four error columns
+# (tol_fail, max_rel_err, mean_rel_err, err_class) and four provenance
+# columns (warmup, git_commit, team_size, bound_cpus). An older CSV is backed
+# up to spgemm_raw.csv.pre-pinning.bak, its omp rows (which ran every thread
+# on one core) move to spgemm_raw_omp_singlecore.csv, and the remaining rows
+# get "unrecorded" in the text columns and empty numbers.
 
 set -uo pipefail
 
@@ -66,9 +88,24 @@ die() {
     exit 1
 }
 
+# Start a CMake build directory from empty. Reusing one is unsafe: when the
+# compiler changes, CMake discards the cache and re-configures without the -D
+# options given on the command line, so a variant can silently build without
+# its flags or OpenMP. Only directories under build/riscv/ are touched.
+fresh_builddir() {
+    case "$1" in
+        build/riscv/?*) ;;
+        *) die "refusing to clear '$1': not under build/riscv/" ;;
+    esac
+
+    rm -rf -- "$1" || die "could not clear $1"
+}
+
 # CLI
 CHECK_ONLY=0
 CHECK_MATRICES=0
+CHECK_DISASM=0
+MIGRATE_CSV=0
 DTYPE_FILTER=""
 KERNEL_FILTER=""
 RUNS_FLAG=""
@@ -95,6 +132,14 @@ while [ $# -gt 0 ]; do
             ;;
         --check-matrices)
             CHECK_MATRICES=1
+            shift
+            ;;
+        --check-disasm)
+            CHECK_DISASM=1
+            shift
+            ;;
+        --migrate-csv)
+            MIGRATE_CSV=1
             shift
             ;;
         --dtype)
@@ -179,6 +224,18 @@ RETRIES="${RETRIES:-1}"
 SHUFFLE="${SHUFFLE:-1}"
 SHUF_SEED="${SHUF_SEED:-$RANDOM}"
 NO_GOVERNOR="${NO_GOVERNOR:-0}"
+OMP_CPUS="${OMP_CPUS:-0-7}"
+OBJDUMP="${OBJDUMP:-objdump}"
+export OBJDUMP
+
+# The code version every row was measured with; -dirty when tracked files
+# have uncommitted changes.
+GIT_COMMIT="$(git -C "$REPO_ROOT" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
+
+if [ "$GIT_COMMIT" != "unknown" ] &&
+   [ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+    GIT_COMMIT="$GIT_COMMIT-dirty"
+fi
 
 MATRICES=(
     wiki-Vote
@@ -202,15 +259,20 @@ MATRICES=(
     webbase-1M
 )
 
-CSV_HEADER="label,kernel,arm,build,march,cflags,cc_version,dtype,rows,cols,nnz_a,nnz_b,nnz_c,flops,op_mean,op_max,op_var,run,time_s,gops,correct,cycles,instructions,threads,stalls_backend,perf_mux,lmul"
-CSV_NFIELDS=27
+CSV_HEADER="label,kernel,arm,build,march,cflags,cc_version,dtype,rows,cols,nnz_a,nnz_b,nnz_c,flops,op_mean,op_max,op_var,run,time_s,gops,correct,cycles,instructions,threads,stalls_backend,perf_mux,lmul,pinning,perf_note,tol_fail,max_rel_err,mean_rel_err,err_class,warmup,git_commit,team_size,bound_cpus"
+CSV_NFIELDS=37
+
+# The header before the pinning, perf_note and error columns, for --migrate-csv.
+OLD_CSV_HEADER="label,kernel,arm,build,march,cflags,cc_version,dtype,rows,cols,nnz_a,nnz_b,nnz_c,flops,op_mean,op_max,op_var,run,time_s,gops,correct,cycles,instructions,threads,stalls_backend,perf_mux,lmul"
 
 F_LABEL=1
 F_KERNEL=2
+F_ARM=3
 F_BUILD=4
 F_CFLAGS=6
 F_CORRECT=21
 F_THREADS=24
+F_ERRCLASS=33
 
 VALID_ARMS="baseline autovec intrinsic omp"
 VALID_BUILDS="gc gcv"
@@ -273,6 +335,33 @@ is_uint() {
     [[ "$1" =~ ^[0-9]+$ ]]
 }
 
+# "0-3,6" -> "0 1 2 3 6". Fails on anything else.
+expand_cpus() {
+    local part
+    local a
+    local b
+    local -a out=()
+    local -a parts=()
+
+    IFS=',' read -ra parts <<< "$1"
+
+    for part in "${parts[@]}"; do
+        if [[ "$part" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+            a="${BASH_REMATCH[1]}"
+            b="${BASH_REMATCH[2]}"
+            [ "$a" -le "$b" ] || return 1
+            for ((; a <= b; a++)); do out+=("$a"); done
+        elif is_uint "$part"; then
+            out+=("$part")
+        else
+            return 1
+        fi
+    done
+
+    [ "${#out[@]}" -gt 0 ] || return 1
+    echo "${out[*]}"
+}
+
 is_uint "$RUNS" ||
     die "RUNS must be a non-negative integer, got '$RUNS'"
 
@@ -301,6 +390,7 @@ fi
 
 CC_VERSION=""
 PRESENT_MATRICES=()
+OMP_CPU_LIST=""
 
 # Matrix files live flat as matrices/<name>.mtx. The nested layout that
 # SuiteSparse tarballs extract to is still accepted so existing checkouts and
@@ -414,6 +504,16 @@ PROBE
 
     if [ "$rc" -eq 0 ]; then
         echo "   rv64gcv probe: compiled and ran correctly"
+
+        # The disassembly checks are only as good as the disassembler: one
+        # that cannot decode RVV would show vector code as unknown words.
+        if "$OBJDUMP" -d --no-show-raw-insn "$tmpd/probe" 2>/dev/null |
+            grep -q 'vfmacc\.vf'; then
+            echo "   OBJDUMP=$OBJDUMP decodes RVV"
+        else
+            rm -rf "$tmpd"
+            die "OBJDUMP='$OBJDUMP' cannot disassemble RVV (needs binutils 2.38+). Set OBJDUMP in $ENV_FILE."
+        fi
     elif [ "$rc" -eq 2 ]; then
         rm -rf "$tmpd"
 
@@ -433,7 +533,7 @@ You are most likely cross-compiling: build on the target, or use an emulator."
     if [ "$NO_GOVERNOR" = "1" ]; then
         echo "   NOTE: governor pin disabled (NO_GOVERNOR=1)"
     elif [ -w "$gov_path" ]; then
-        echo "   cpufreq governor is writable — will pin to 'performance'"
+        echo "   cpufreq governor is writable — will pin to 'performance' on cpu $PIN_CORE and the omp cpus"
     else
         echo "   WARNING: $gov_path not writable (need root). DVFS stays live — do NOT trust sub-5% effects."
     fi
@@ -452,6 +552,31 @@ You are most likely cross-compiling: build on the target, or use an emulator."
             echo "   WARNING: cannot read perf_event_paranoid; perf counters may be unavailable."
         fi
     fi
+
+    # The omp arm's core set: real CPUs, and no two of them SMT siblings.
+    OMP_CPU_LIST="$(expand_cpus "$OMP_CPUS")" ||
+        die "OMP_CPUS='$OMP_CPUS' is not a CPU list such as 0-7"
+
+    local c
+    local sib
+
+    for c in $OMP_CPU_LIST; do
+        [ -d "/sys/devices/system/cpu/cpu$c" ] ||
+            die "OMP_CPUS includes cpu$c, which does not exist"
+
+        sib="$(cat "/sys/devices/system/cpu/cpu$c/topology/thread_siblings_list" 2>/dev/null)"
+
+        if [ -n "$sib" ]; then
+            local other
+            for other in $(expand_cpus "$sib"); do
+                [ "$other" = "$c" ] && continue
+                in_list "$other" "$OMP_CPU_LIST" &&
+                    die "OMP_CPUS has cpu$c and its SMT sibling cpu$other; use one hardware thread per core"
+            done
+        fi
+    done
+
+    echo "   omp arm cpus: $OMP_CPU_LIST (OMP_PLACES=cores OMP_PROC_BIND=close)"
 
     local isolated
     isolated="$(cat /sys/devices/system/cpu/isolated 2>/dev/null || echo '')"
@@ -512,6 +637,7 @@ if [ "$CHECK_MATRICES" = "1" ]; then
     march="$(build_march "$b")"
 
     builddir="build/riscv/csr_check"
+    fresh_builddir "$builddir"
 
     echo ">> building csr_check ($march)"
 
@@ -785,6 +911,15 @@ arms:    $VALID_ARMS"
 
 load_experiments
 
+# The omp arm needs one core per thread inside OMP_CPUS.
+OMP_NCPUS="$(wc -w <<< "$OMP_CPU_LIST" | tr -d ' ')"
+
+for ((i = 0; i < ${#EXP_ARM[@]}; i++)); do
+    if [ "${EXP_ARM[i]}" = "omp" ] && [ "${EXP_THREADS[i]}" -gt "$OMP_NCPUS" ]; then
+        die "omp row asks for ${EXP_THREADS[i]} threads but OMP_CPUS='$OMP_CPUS' has only $OMP_NCPUS cores"
+    fi
+done
+
 # Compile-time tunables require separate build artifacts for every unique
 # (build,cflags) pair.
 VARIANT_BUILD=()
@@ -831,9 +966,64 @@ if ! flock -n 200; then
     die "another run_bench.sh is already running against $OUT_DIR"
 fi
 
+# ============================================================================
+# --migrate-csv
+# ============================================================================
+
+if [ "$MIGRATE_CSV" = "1" ]; then
+    [ -f "$CSV" ] || die "--migrate-csv: no $CSV to migrate"
+
+    hdr="$(head -1 "$CSV")"
+
+    if [ "$hdr" = "$CSV_HEADER" ]; then
+        echo ">> $CSV already has the current columns; nothing to do."
+        exit 0
+    fi
+
+    [ "$hdr" = "$OLD_CSV_HEADER" ] ||
+        die "--migrate-csv: $CSV has an unrecognised header; not touching it"
+
+    BAK="$CSV.pre-pinning.bak"
+    OMP_OLD="$OUT_DIR/spgemm_raw_omp_singlecore.csv"
+
+    [ -e "$BAK" ] && die "--migrate-csv: $BAK already exists; move it away first"
+    [ -e "$OMP_OLD" ] && die "--migrate-csv: $OMP_OLD already exists; move it away first"
+
+    cp -p "$CSV" "$BAK" || die "backup to $BAK failed"
+
+    tmp="$(mktemp "$OUT_DIR/.csv_XXXXXX")" || die "mktemp failed"
+
+    # Old omp rows ran every thread on one core, so they are set aside whole
+    # rather than labelled; everything else keeps its data and is marked as
+    # having no recorded pinning or perf status.
+    awk -F, -v fa="$F_ARM" -v hdr="$CSV_HEADER" -v omp="$OMP_OLD" '
+        NR == 1 { print hdr; print > omp; next }
+        $fa == "omp" { print > omp; n_omp++; next }
+        { print $0 ",unrecorded,unrecorded,,,,unrecorded,,unrecorded,,unrecorded"; n_kept++ }
+        END {
+            printf ">> kept %d rows, moved %d single-core omp rows aside\n", n_kept, n_omp > "/dev/stderr"
+        }
+    ' "$CSV" > "$tmp" && mv -f "$tmp" "$CSV" ||
+        { rm -f "$tmp"; die "migration failed; the original is in $BAK"; }
+
+    echo ">> migrated $CSV"
+    echo ">>   backup:              $BAK"
+    echo ">>   old omp rows:        $OMP_OLD"
+    exit 0
+fi
+
+# Governor and frequency for PIN_CORE, plus every omp core, so a multi-thread
+# run never lands on a core left on a slower governor.
+GOV_CPUS="$PIN_CORE"
+
+for c in $OMP_CPU_LIST; do
+    in_list "$c" "$GOV_CPUS" || GOV_CPUS="$GOV_CPUS $c"
+done
+
 GOV_PATH="/sys/devices/system/cpu/cpu${PIN_CORE}/cpufreq/scaling_governor"
 FREQ_PATH="/sys/devices/system/cpu/cpu${PIN_CORE}/cpufreq/scaling_cur_freq"
 ORIG_GOV=""
+declare -A ORIG_GOVS=()
 
 read_freq() {
     cat "$FREQ_PATH" 2>/dev/null || echo 0
@@ -845,25 +1035,42 @@ set_governor_performance() {
         return
     }
 
-    if [ -w "$GOV_PATH" ]; then
-        ORIG_GOV="$(cat "$GOV_PATH" 2>/dev/null || echo '')"
+    local c
+    local path
+    local orig
 
-        if echo performance > "$GOV_PATH" 2>/dev/null; then
-            echo ">> cpufreq governor set to 'performance' on core $PIN_CORE (was '${ORIG_GOV:-unknown}')"
+    for c in $GOV_CPUS; do
+        path="/sys/devices/system/cpu/cpu$c/cpufreq/scaling_governor"
+
+        if [ -w "$path" ]; then
+            orig="$(cat "$path" 2>/dev/null || echo '')"
+
+            if echo performance > "$path" 2>/dev/null; then
+                ORIG_GOVS[$c]="$orig"
+                echo ">> cpufreq governor set to 'performance' on cpu $c (was '${orig:-unknown}')"
+            else
+                echo ">> WARNING: could not write $path — DVFS is live on cpu $c."
+            fi
         else
-            echo ">> WARNING: could not write $GOV_PATH — DVFS is live."
-            ORIG_GOV=""
+            echo ">> WARNING: $path not writable (need root). DVFS is live on cpu $c."
         fi
-    else
-        echo ">> WARNING: $GOV_PATH not writable (need root). DVFS is live."
-    fi
+    done
+
+    ORIG_GOV="${ORIG_GOVS[$PIN_CORE]:-}"
 }
 
 restore_governor() {
-    if [ -n "$ORIG_GOV" ] && [ -w "$GOV_PATH" ]; then
-        echo "$ORIG_GOV" > "$GOV_PATH" 2>/dev/null &&
-            echo ">> restored governor to '$ORIG_GOV'"
-    fi
+    local c
+    local path
+
+    for c in "${!ORIG_GOVS[@]}"; do
+        path="/sys/devices/system/cpu/cpu$c/cpufreq/scaling_governor"
+
+        if [ -n "${ORIG_GOVS[$c]}" ] && [ -w "$path" ]; then
+            echo "${ORIG_GOVS[$c]}" > "$path" 2>/dev/null &&
+                echo ">> restored governor on cpu $c to '${ORIG_GOVS[$c]}'"
+        fi
+    done
 }
 
 cleanup() {
@@ -917,6 +1124,7 @@ build_all() {
 
     # One CMake build tree per (build, cflags) variant.
     builddir="build/riscv/$tag"
+    fresh_builddir "$builddir"
 
     echo ">> [$tag] configuring ($march${extra:+ $extra})"
 
@@ -965,6 +1173,54 @@ build_all() {
 
     [ -x "bench/riscv/bench_$tag" ] ||
         die "bench/riscv/bench_$tag was not produced or is not executable"
+
+    check_variant_disasm "$tag"
+}
+
+# Disassembly checks for every experiment row built into this variant, by arm:
+#   baseline, omp   kernel must contain no RVV instruction
+#   intrinsic       kernel must contain the indexed gather, FMA and scatter
+#   autovec         vector content is reported, never fails
+check_variant_disasm() {
+    local tag="$1"
+    local bin="bench/riscv/bench_$tag"
+    local i
+    local done_keys=""
+    local key
+    local prefix
+    local rc
+
+    for ((i = 0; i < ${#EXP_ARM[@]}; i++)); do
+        [ "$(exp_tag "$i")" = "$tag" ] || continue
+
+        key="${EXP_ARM[i]}:${EXP_KERNEL[i]}"
+        in_list "$key" "$done_keys" && continue
+        done_keys="$done_keys $key"
+
+        prefix="rvsp_spgemm_${EXP_KERNEL[i]}"
+
+        case "${EXP_ARM[i]}" in
+            baseline|omp)
+                bash bench/common/check_disasm.sh riscv scalar "$bin" "$prefix"
+                rc=$?
+                ;;
+            intrinsic)
+                bash bench/common/check_disasm.sh riscv vector "$bin" "$prefix" \
+                    vluxei32 vsuxei32 vfmacc
+                rc=$?
+                ;;
+            autovec)
+                bash bench/common/check_disasm.sh riscv report "$bin" "$prefix"
+                rc=$?
+                ;;
+            *)
+                rc=0
+                ;;
+        esac
+
+        [ "$rc" -eq 0 ] ||
+            die "[$tag] disassembly check failed for ${EXP_ARM[i]} ${EXP_KERNEL[i]} (rc=$rc)"
+    done
 }
 
 RUNNER=""
@@ -974,6 +1230,9 @@ if command -v taskset >/dev/null 2>&1; then
     echo ">> pinning to core $PIN_CORE"
 else
     echo ">> WARNING: taskset not found — runs will NOT be pinned to one core."
+
+    in_list omp "${EXP_ARM[*]}" &&
+        die "taskset not found, and the omp arm cannot be pinned one thread per core without it"
 fi
 
 # Validate each binary before the real sweep using a tiny configuration.
@@ -1054,11 +1313,19 @@ for ((i = 0; i < ${#VARIANT_TAG[@]}; i++)); do
         "${VARIANT_CFLAGS[i]}" \
         "${VARIANT_TAG[i]}"
 
+    [ "$CHECK_DISASM" = "1" ] && continue
+
     smoke_test \
         "${VARIANT_BUILD[i]}" \
         "${VARIANT_CFLAGS[i]}" \
         "${VARIANT_TAG[i]}"
 done
+
+if [ "$CHECK_DISASM" = "1" ]; then
+    echo ""
+    echo ">> --check-disasm: every variant built and passed its disassembly checks; nothing was run."
+    exit 0
+fi
 
 set_governor_performance
 
@@ -1074,7 +1341,10 @@ if [ ! -f "$CSV" ]; then
 else
     existing_header="$(head -1 "$CSV")"
 
-    if [ "$existing_header" != "$CSV_HEADER" ]; then
+    if [ "$existing_header" = "$OLD_CSV_HEADER" ]; then
+        die "existing $CSV predates the pinning, perf_note and error columns.
+Run: bash bench/riscv/run_bench.sh --migrate-csv"
+    elif [ "$existing_header" != "$CSV_HEADER" ]; then
         die "existing $CSV has a different header than expected."
     fi
 
@@ -1115,6 +1385,7 @@ fi
     echo "uname: $(uname -srm)"
     echo "cc: $CC"
     echo "cc_version: $CC_VERSION"
+    echo "git_commit: $GIT_COMMIT"
     echo "cc_banner: $("$CC" --version 2>/dev/null | head -1)"
 
     for ((i = 0; i < ${#VARIANT_TAG[@]}; i++)); do
@@ -1126,7 +1397,9 @@ fi
     echo "runs: $RUNS  warmup: $WARMUP  pin_core: $PIN_CORE  retries: $RETRIES"
     echo "shuffle: $SHUFFLE  shuf_seed: $SHUF_SEED"
     echo "governor_requested: performance  governor_orig: ${ORIG_GOV:-not_changed}"
-    echo "governor_now: $(cat "$GOV_PATH" 2>/dev/null || echo n/a)"
+    echo "governor_now: $(for c in $GOV_CPUS; do printf 'cpu%s=%s ' "$c" "$(cat "/sys/devices/system/cpu/cpu$c/cpufreq/scaling_governor" 2>/dev/null || echo n/a)"; done)"
+    echo "pinning: serial arms taskset -c $PIN_CORE; omp arm taskset -c $OMP_CPUS OMP_PLACES=cores OMP_PROC_BIND=close"
+    echo "objdump: $OBJDUMP ($("$OBJDUMP" --version 2>/dev/null | head -1))"
     echo "core_isolated: $(cat /sys/devices/system/cpu/isolated 2>/dev/null || echo none)"
     echo "freq_khz: $(read_freq)"
     echo "isa: $(grep -m1 isa /proc/cpuinfo 2>/dev/null || echo n/a)"
@@ -1306,6 +1579,18 @@ run_config() {
     local march
     march="$(build_march "$b")"
 
+    # Serial arms run on PIN_CORE. The omp arm gets the whole OMP_CPUS set and
+    # OpenMP binds thread i to core i of it.
+    local -a pin_env=()
+    local pin_runner="$RUNNER"
+    local pin_desc="taskset=$PIN_CORE"
+
+    if [ "$arm" = "omp" ]; then
+        pin_env=(OMP_PLACES=cores OMP_PROC_BIND=close)
+        pin_runner="taskset -c $OMP_CPUS"
+        pin_desc="taskset=${OMP_CPUS//,/+} places=cores bind=close"
+    fi
+
     local desc="$k@$b"
 
     [ "$cf" != "-" ] && desc="$k@$b[$cf]"
@@ -1346,7 +1631,7 @@ run_config() {
         tmp="$(mktemp "$OUT_DIR/.run_XXXXXX")"
         valid="$(mktemp "$OUT_DIR/.valid_XXXXXX")"
 
-        if OMP_NUM_THREADS="$th" $RUNNER "./bench/riscv/bench_$tag" \
+        if env OMP_NUM_THREADS="$th" "${pin_env[@]}" $pin_runner "./bench/riscv/bench_$tag" \
             --kernel "$k" \
             "$@" \
             --runs "$RUNS" \
@@ -1358,11 +1643,24 @@ run_config() {
             --cflags "$cf" \
             --threads "$th" \
             --cc-version "$CC_VERSION" \
+            --pinning "$pin_desc" \
+            --git-commit "$GIT_COMMIT" \
+            --verify-pinning \
             > "$tmp" \
             2>"$tmp.err"; then
             :
         else
             rc=$?
+
+            # Exit 3 is a failed precondition (input not canonical, no or bad
+            # reference, pinning not as intended). Retrying cannot fix it, and
+            # carrying on would measure something other than intended.
+            if [ "$rc" -eq 3 ]; then
+                echo "   !! PRECONDITION FAILED: $label / $desc ($arm)" >&2
+                sed 's/^/      /' "$tmp.err" >&2
+                rm -f "$tmp" "$tmp.err" "$valid"
+                die "stopping: $label / $desc failed a precondition (see above). Nothing appended to $CSV."
+            fi
 
             echo "   !! failed (rc=$rc) — $label / $desc (attempt $attempt/$((RETRIES + 1))): $(head -1 "$tmp.err" 2>/dev/null)"
         fi
@@ -1376,6 +1674,22 @@ run_config() {
             "$valid"
 
         n="$(wc -l < "$valid" | tr -d ' ')"
+
+        # A structural, beyond-rounding or failed result is a wrong answer.
+        # Keep it out of the CSV, set it aside, and stop the sweep.
+        local wrong
+        wrong="$(awk -F, -v f="$F_ERRCLASS" \
+            '$f == "structural" || $f == "value" || $f == "failed" { print $f }' "$valid" |
+            sort | uniq -c | tr '\n' ' ')"
+
+        if [ -n "$wrong" ]; then
+            [ -f "$OUT_DIR/rejected.csv" ] || echo "$CSV_HEADER" > "$OUT_DIR/rejected.csv"
+            cat "$valid" >> "$OUT_DIR/rejected.csv"
+            echo "   !! WRONG ANSWER: $label / $desc ($arm): $wrong" >&2
+            echo "   !! the result differs from the scalar reference by more than rounding" >&2
+            rm -f "$tmp" "$tmp.err" "$valid"
+            die "stopping: $label / $desc is not rounding error. Rows saved to $OUT_DIR/rejected.csv, nothing appended to $CSV."
+        fi
 
         if [ "$n" -eq "$RUNS" ]; then
             atomic_append_csv "$valid"
