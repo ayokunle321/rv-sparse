@@ -69,7 +69,8 @@ typedef struct rvsp_spgemm_descr *rvsp_spgemm_descr_t;
  * SpGEMM accumulation strategy.
  *
  * RVSP_SPGEMM_ALGO_DEFAULT uses the scalar implementation.
- * The RVV strategies require a build with the RISC-V Vector extension.
+ * The RVV strategies require a build with the RISC-V Vector extension, and
+ * the AVX-512 strategy an x86 build with AVX-512F.
  */
 typedef enum {
   RVSP_SPGEMM_ALGO_DEFAULT = 0, /* scalar */
@@ -77,6 +78,7 @@ typedef enum {
   RVSP_SPGEMM_ALGO_RVV_M2,      /* gather and scatter, LMUL=2 */
   RVSP_SPGEMM_ALGO_RVV_M4,      /* gather and scatter, LMUL=4 */
   RVSP_SPGEMM_ALGO_OMP,         /* scalar, row loop over OpenMP threads */
+  RVSP_SPGEMM_ALGO_AVX512,      /* gather and scatter, AVX-512, x86 only */
 
   /* Alias, kept last so it cannot renumber what follows. */
   RVSP_SPGEMM_ALGO_RVV = RVSP_SPGEMM_ALGO_RVV_M2

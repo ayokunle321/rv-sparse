@@ -13,7 +13,7 @@ lib/
 *.out
 
 # Data
-bench/results
+bench/*/results
 
 # Debug / profiling
 *.dSYM/
@@ -43,12 +43,12 @@ vgcore*
 __pycache__/
 *.pyc
 
-# Per-machine bench config; copy from bench/env.sh.example
-bench/env.sh
+# Per-machine bench config; copy from bench/<isa>/env.sh.example
+bench/*/env.sh
 
 # Bench binaries, one per (build, cflags)
-bench/bench_*
-bench/csr_check
+bench/*/bench_*
+bench/*/csr_check
 
 # Paper drafts are exported from elsewhere; the artifacts in paper/ are the
 # record. paper/data and paper/figures are deliberately NOT ignored.

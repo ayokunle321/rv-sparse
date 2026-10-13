@@ -15,10 +15,10 @@ cflags are part of the group identity because the tunables are compile-time
 macros. The denominator is always the default-cflags baseline.
 
 Usage:
-    python3 bench/analyze.py bench/results/spgemm_raw.csv
-    python3 bench/analyze.py bench/results/spgemm_raw.csv --csv-out summary.csv
-    python3 bench/analyze.py bench/results/spgemm_raw.csv --no-csv
-    python3 bench/analyze.py bench/results/spgemm_raw.csv --baseline rvv_f32
+    python3 bench/common/analyze.py bench/riscv/results/spgemm_raw.csv
+    python3 bench/common/analyze.py bench/riscv/results/spgemm_raw.csv --csv-out summary.csv
+    python3 bench/common/analyze.py bench/riscv/results/spgemm_raw.csv --no-csv
+    python3 bench/common/analyze.py bench/riscv/results/spgemm_raw.csv --baseline rvv_f32
 
 Pure standard library; runs on the board without pandas/numpy.
 """
@@ -57,15 +57,6 @@ def _fnum(row, key, cast=float, default=None):
         return default
 
 
-def _infer_arm(kernel):
-    """Best-effort arm for legacy CSVs without an arm column."""
-    if kernel.startswith("rvv_"):
-        return "intrinsic"
-    # scalar_* is ambiguous without build information: the same source can
-    # be either the gc baseline or the gcv autovec arm.
-    return "-"
-
-
 def load(path):
     rows = []
 
@@ -74,11 +65,9 @@ def load(path):
             if not row.get("kernel"):
                 continue
 
-            metric = row.get("gops", row.get("gflops"))
-
             try:
                 row["time_s"] = float(row["time_s"])
-                row["gops"] = float(metric)
+                row["gops"] = float(row["gops"])
                 row["correct"] = int(row["correct"])
                 row["nnz_c"] = int(row["nnz_c"])
                 row["flops"] = float(row["flops"])
@@ -86,10 +75,7 @@ def load(path):
                 continue
 
             row["build"] = (row.get("build") or "-").strip()
-            row["arm"] = (
-                (row.get("arm") or "").strip()
-                or _infer_arm(row["kernel"])
-            )
+            row["arm"] = (row.get("arm") or "-").strip()
             row["march"] = (row.get("march") or "-").strip()
             row["cflags"] = (
                 (row.get("cflags") or NO_CFLAGS).strip()
@@ -512,9 +498,7 @@ def _short_cflags(cflags):
         return "novec"
 
     return " ".join(
-        token
-        .replace("-DRVSP_V2_", "")
-        .replace("-D", "")
+        token.replace("-D", "")
         for token in cflags.split()
     )
 

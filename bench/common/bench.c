@@ -216,6 +216,10 @@ KERNEL_WRAP(rvv_f32_m2_w, rvsp_spgemm_rvv_f32_m2)
 KERNEL_WRAP(rvv_f32_m4_w, rvsp_spgemm_rvv_f32_m4)
 #endif
 
+#if defined(__AVX512F__)
+KERNEL_WRAP(avx512_f32_w, rvsp_spgemm_avx512_f32)
+#endif
+
 typedef struct {
   const char *name;
   spgemm_fn fn;
@@ -238,6 +242,11 @@ static const kernel_entry_t KERNELS[] = {
     {"rvv_f32_m2", rvv_f32_m2_w, RVSP_SPGEMM_ALGO_RVV_M2, 2, RVSP_DTYPE_FP32,
      "f32", scalar_f32_w, "scalar_f32"},
     {"rvv_f32_m4", rvv_f32_m4_w, RVSP_SPGEMM_ALGO_RVV_M4, 4, RVSP_DTYPE_FP32,
+     "f32", scalar_f32_w, "scalar_f32"},
+#endif
+
+#if defined(__AVX512F__)
+    {"avx512_f32", avx512_f32_w, RVSP_SPGEMM_ALGO_AVX512, 0, RVSP_DTYPE_FP32,
      "f32", scalar_f32_w, "scalar_f32"},
 #endif
 
@@ -541,9 +550,9 @@ static void usage(const char *prog) {
   for (int i = 0; i < N_KERNELS; i++)
     fprintf(stderr, "  %s\n", KERNELS[i].name);
 
-#if !defined(__riscv_vector)
+#if !defined(__riscv_vector) && !defined(__AVX512F__)
   fprintf(stderr, "  (vector kernels omitted: this binary was built without "
-                  "the V extension)\n");
+                  "the V extension or AVX-512F)\n");
 #endif
 }
 

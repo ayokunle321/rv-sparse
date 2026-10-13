@@ -10,7 +10,7 @@
 
 #include <stdlib.h>
 
-#include "../kernels/spgemm/rvsp_spgemm.h"
+#include "../kernels/spgemm/common/rvsp_spgemm.h"
 #include "rv_sparse.h"
 
 /*

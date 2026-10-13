@@ -46,20 +46,72 @@ endif()
 # Sources
 # ------------------------------------------------------------------------------
 
-file(GLOB_RECURSE RVSP_SRCS CONFIGURE_DEPENDS src/*.c)
-
-# Legacy standalone prototype; it may carry its own main().
-list(FILTER RVSP_SRCS EXCLUDE REGEX "src/matmul/AxBRowIP\\.c$")
-
-# Vector kernels #error without the V extension rather than silently falling
-# back to scalar, so they are excluded by path when -march does not enable V.
-# Match only the RISC-V ISA string so an unrelated flag cannot match "v".
-if(RVSP_ARCH_FLAGS MATCHES "(^| )-march=rv[0-9]+[a-z0-9_]*v")
-    message(STATUS "vector kernels included")
+# Kernels live in one folder per ISA beside the ISA-neutral common/ folder, and
+# a build compiles common/ plus exactly one ISA folder. Both folders define the
+# same scalar symbols, so they can never be linked together.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+    set(RVSP_ISA_DEFAULT intel)
 else()
-    message(STATUS "vector kernels excluded: V extension not enabled")
-    list(FILTER RVSP_SRCS EXCLUDE REGEX
-         "accum_rvv_f32_m[124]\\.c$")
+    set(RVSP_ISA_DEFAULT riscv)
+endif()
+
+set(RVSP_ISA "${RVSP_ISA_DEFAULT}" CACHE STRING
+    "Kernel folder under src/kernels/spgemm: riscv or intel")
+set_property(CACHE RVSP_ISA PROPERTY STRINGS riscv intel)
+
+if(NOT RVSP_ISA MATCHES "^(riscv|intel)$")
+    message(FATAL_ERROR "RVSP_ISA must be riscv or intel, got '${RVSP_ISA}'")
+endif()
+
+message(STATUS "kernel ISA: ${RVSP_ISA}")
+
+set(RVSP_KERNEL_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/spgemm)
+
+file(GLOB_RECURSE RVSP_CORE_SRCS CONFIGURE_DEPENDS src/core/*.c)
+file(GLOB RVSP_KERNEL_SRCS_UNSORTED CONFIGURE_DEPENDS
+     ${RVSP_KERNEL_DIR}/common/*.c ${RVSP_KERNEL_DIR}/${RVSP_ISA}/*.c)
+
+# Order kernel sources by file name, which is the order they had when they all
+# sat in one folder, so the archive and therefore the link are unchanged.
+set(RVSP_KERNEL_KEYED "")
+foreach(src ${RVSP_KERNEL_SRCS_UNSORTED})
+    get_filename_component(name ${src} NAME)
+    list(APPEND RVSP_KERNEL_KEYED "${name}|${src}")
+endforeach()
+list(SORT RVSP_KERNEL_KEYED)
+
+set(RVSP_SRCS ${RVSP_CORE_SRCS})
+foreach(entry ${RVSP_KERNEL_KEYED})
+    string(REGEX REPLACE "^[^|]*\\|" "" src "${entry}")
+    list(APPEND RVSP_SRCS ${src})
+endforeach()
+
+# Vector kernels #error without their vector extension rather than silently
+# falling back to scalar, so they are excluded by path when it is not enabled.
+if(RVSP_ISA STREQUAL "riscv")
+    # Match only the RISC-V ISA string so an unrelated flag cannot match "v".
+    if(RVSP_ARCH_FLAGS MATCHES "(^| )-march=rv[0-9]+[a-z0-9_]*v")
+        message(STATUS "vector kernels included")
+    else()
+        message(STATUS "vector kernels excluded: V extension not enabled")
+        list(FILTER RVSP_SRCS EXCLUDE REGEX
+             "accum_rvv_f32_m[124]\\.c$")
+    endif()
+else()
+    # -march=native says nothing by itself, so ask the compiler.
+    include(CheckCSourceCompiles)
+    set(CMAKE_REQUIRED_FLAGS "${RVSP_ARCH_FLAGS}")
+    check_c_source_compiles(
+        "#ifndef __AVX512F__\n#error no AVX-512F\n#endif\nint main(void){return 0;}"
+        RVSP_HAVE_AVX512F)
+    unset(CMAKE_REQUIRED_FLAGS)
+
+    if(RVSP_HAVE_AVX512F)
+        message(STATUS "vector kernels included")
+    else()
+        message(STATUS "vector kernels excluded: AVX-512F not enabled")
+        list(FILTER RVSP_SRCS EXCLUDE REGEX "accum_avx512_f32\\.c$")
+    endif()
 endif()
 
 # The OpenMP kernel includes <omp.h>, which only exists when the toolchain
@@ -72,6 +124,7 @@ endif()
 add_library(rvsparse STATIC ${RVSP_SRCS})
 
 target_include_directories(rvsparse PUBLIC include)
+target_include_directories(rvsparse PRIVATE ${RVSP_KERNEL_DIR}/common)
 
 if(RVSP_OPENMP)
     find_package(OpenMP REQUIRED COMPONENTS C)

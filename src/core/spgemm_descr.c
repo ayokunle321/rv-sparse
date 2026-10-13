@@ -12,8 +12,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "../kernels/spgemm/rvsp_common.h"
-#include "../kernels/spgemm/rvsp_spgemm.h"
+#include "../kernels/spgemm/common/rvsp_common.h"
+#include "../kernels/spgemm/common/rvsp_spgemm.h"
 #include "rv_sparse.h"
 
 #if defined(_OPENMP)
@@ -57,6 +57,11 @@ static rvsp_numeric_fn numeric_for(rvsp_spgemm_algo_t algo) {
 
   case RVSP_SPGEMM_ALGO_RVV_M4:
     return rvsp_spgemm_rvv_f32_m4_numeric;
+#endif
+
+#if defined(__AVX512F__)
+  case RVSP_SPGEMM_ALGO_AVX512:
+    return rvsp_spgemm_avx512_f32_numeric;
 #endif
 
 #if defined(_OPENMP)

@@ -5,7 +5,7 @@
 # Runs one config at a time on one pinned core, validates every result, and
 # writes self-describing rows to an append-only CSV.
 #
-# bench/experiments.tsv is the single source of truth for which experiments
+# bench/riscv/experiments.tsv is the single source of truth for which experiments
 # run. This script handles build, measurement, validation, resume, and
 # environment control.
 #
@@ -30,9 +30,9 @@
 # cpuset; taskset alone does not prevent other scheduler activity.
 #
 # Setup:
-#   cp bench/env.sh.example bench/env.sh
+#   cp bench/riscv/env.sh.example bench/riscv/env.sh
 #   # set CC
-#   bash bench/run_bench.sh --check
+#   bash bench/riscv/run_bench.sh --check
 #
 # Run from the repository root.
 #
@@ -47,15 +47,15 @@
 #   -h | --help             show this message
 #
 # Common cases:
-#   bash bench/run_bench.sh
-#   bash bench/run_bench.sh --kernels rvv_f32_m2
-#   bash bench/run_bench.sh --kernels intrinsic --runs 30
+#   bash bench/riscv/run_bench.sh
+#   bash bench/riscv/run_bench.sh --kernels rvv_f32_m2
+#   bash bench/riscv/run_bench.sh --kernels intrinsic --runs 30
 #
-# Everything else is configured in bench/env.sh.
+# Everything else is configured in bench/riscv/env.sh.
 
 set -uo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT" || {
     echo "!! cannot cd to $REPO_ROOT" >&2
     exit 1
@@ -72,7 +72,7 @@ CHECK_MATRICES=0
 DTYPE_FILTER=""
 KERNEL_FILTER=""
 RUNS_FLAG=""
-EXP_FILE="bench/experiments.tsv"
+EXP_FILE="bench/riscv/experiments.tsv"
 
 BASELINE_KERNEL="scalar_f32"
 
@@ -152,7 +152,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-ENV_FILE="${ENV_FILE:-bench/env.sh}"
+ENV_FILE="${ENV_FILE:-bench/riscv/env.sh}"
 
 if [ -f "$ENV_FILE" ]; then
     # shellcheck disable=SC1090
@@ -160,13 +160,13 @@ if [ -f "$ENV_FILE" ]; then
 else
     die "no $ENV_FILE on this box.
 
-cp bench/env.sh.example bench/env.sh
-\$EDITOR bench/env.sh
+cp bench/riscv/env.sh.example bench/riscv/env.sh
+\$EDITOR bench/riscv/env.sh
 
 Set CC to a compiler that supports -march=rv64gcv, then re-run with --check."
 fi
 
-OUT_DIR="${OUT_DIR:-bench/results}"
+OUT_DIR="${OUT_DIR:-bench/riscv/results}"
 CSV="${CSV:-$OUT_DIR/spgemm_raw.csv}"
 RUNS="${RUNS_FLAG:-${RUNS:-10}}"
 WARMUP="${WARMUP:-3}"
@@ -511,7 +511,7 @@ if [ "$CHECK_MATRICES" = "1" ]; then
     b=gc
     march="$(build_march "$b")"
 
-    builddir="build/csr_check"
+    builddir="build/riscv/csr_check"
 
     echo ">> building csr_check ($march)"
 
@@ -519,6 +519,7 @@ if [ "$CHECK_MATRICES" = "1" ]; then
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_C_COMPILER="$CC" \
         -DRVSP_ARCH_FLAGS="$march" \
+        -DRVSP_ISA=riscv \
         -DRVSP_BUILD_TESTS=OFF \
         -DRVSP_BUILD_EXAMPLES=OFF \
         >/dev/null ||
@@ -530,15 +531,15 @@ if [ "$CHECK_MATRICES" = "1" ]; then
     "$CC" -Wall -Wextra -std=c11 \
         -Iinclude \
         -Itools/include \
-        -Isrc/kernels/spgemm \
+        -Isrc/kernels/spgemm/common \
         $march \
         -O2 \
-        bench/csr_check.c \
+        bench/common/csr_check.c \
         -L"$builddir" \
         -lrvsparse_tools \
         -lrvsparse \
         -lm \
-        -o bench/csr_check ||
+        -o bench/riscv/csr_check ||
         die "csr_check build failed"
 
     MTX_PATHS=()
@@ -550,7 +551,7 @@ if [ "$CHECK_MATRICES" = "1" ]; then
     echo ">> checking ${#MTX_PATHS[@]} matrices"
     echo ""
 
-    ./bench/csr_check "${MTX_PATHS[@]}"
+    ./bench/riscv/csr_check "${MTX_PATHS[@]}"
     rc=$?
 
     echo ""
@@ -805,7 +806,7 @@ done
 echo ">> binaries to build: ${#VARIANT_TAG[@]}"
 
 for ((i = 0; i < ${#VARIANT_TAG[@]}; i++)); do
-    printf '     bench/bench_%-28s march=%s  cflags=%s\n' \
+    printf '     bench/riscv/bench_%-28s march=%s  cflags=%s\n' \
         "${VARIANT_TAG[i]}" \
         "$(build_march "${VARIANT_BUILD[i]}")" \
         "${VARIANT_CFLAGS[i]}"
@@ -915,7 +916,7 @@ build_all() {
     esac
 
     # One CMake build tree per (build, cflags) variant.
-    builddir="build/$tag"
+    builddir="build/riscv/$tag"
 
     echo ">> [$tag] configuring ($march${extra:+ $extra})"
 
@@ -923,6 +924,7 @@ build_all() {
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_C_COMPILER="$CC" \
         -DRVSP_ARCH_FLAGS="$march $extra" \
+        -DRVSP_ISA=riscv \
         -DRVSP_OPENMP="$openmp" \
         -DRVSP_BUILD_TESTS=OFF \
         -DRVSP_BUILD_EXAMPLES=OFF \
@@ -941,28 +943,28 @@ build_all() {
             die "[$tag] expected build artifact missing: $f"
     done
 
-    echo ">> [$tag] compiling bench.c -> bench/bench_$tag"
+    echo ">> [$tag] compiling bench.c -> bench/riscv/bench_$tag"
 
     "$CC" \
         -Wall -Wextra \
         -std=c11 \
         -Iinclude \
         -Itools/include \
-        -Isrc/kernels/spgemm \
+        -Isrc/kernels/spgemm/common \
         $march \
         $extra \
         -O3 \
         $PERF_FLAG \
-        bench/bench.c \
+        bench/common/bench.c \
         -L"$builddir" \
         -lrvsparse_tools \
         -lrvsparse \
         -lm \
-        -o "bench/bench_$tag" ||
+        -o "bench/riscv/bench_$tag" ||
         die "[$tag] bench build failed"
 
-    [ -x "bench/bench_$tag" ] ||
-        die "bench/bench_$tag was not produced or is not executable"
+    [ -x "bench/riscv/bench_$tag" ] ||
+        die "bench/riscv/bench_$tag was not produced or is not executable"
 }
 
 RUNNER=""
@@ -990,7 +992,7 @@ smoke_test() {
 
     tmp="$(mktemp "$OUT_DIR/.smoke_XXXXXX")"
 
-    if ! $RUNNER "./bench/bench_$tag" \
+    if ! $RUNNER "./bench/riscv/bench_$tag" \
         --kernel scalar_f32 \
         --gen 64 64 0.05 1 \
         --runs 2 \
@@ -1344,7 +1346,7 @@ run_config() {
         tmp="$(mktemp "$OUT_DIR/.run_XXXXXX")"
         valid="$(mktemp "$OUT_DIR/.valid_XXXXXX")"
 
-        if OMP_NUM_THREADS="$th" $RUNNER "./bench/bench_$tag" \
+        if OMP_NUM_THREADS="$th" $RUNNER "./bench/riscv/bench_$tag" \
             --kernel "$k" \
             "$@" \
             --runs "$RUNS" \
@@ -1517,7 +1519,7 @@ else
     echo ">> integrity check passed: every group has exactly $RUNS rows."
 fi
 
-echo ">> analyze with: python3 bench/analyze.py $CSV --baseline $BASELINE_KERNEL"
+echo ">> analyze with: python3 bench/common/analyze.py $CSV --baseline $BASELINE_KERNEL"
 
 [ "${#FAILED_CONFIGS[@]}" -eq 0 ] || exit 1
 

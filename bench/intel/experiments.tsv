@@ -1,0 +1,33 @@
+# bench/intel/experiments.tsv -- experiment configurations, x86 arm.
+#
+# Same columns and meaning as bench/riscv/experiments.tsv:
+# arm     baseline | autovec | intrinsic | omp
+# kernel  --kernel name from bench.c
+# dtype   f32
+# build   native  (= -march=native; the only x86 build)
+# cflags  extra compile flags, or -
+# threads OpenMP thread count, 1 for serial kernels
+#
+# Cells:
+#   A  baseline   scalar_f32, auto-vectorization off, 1 thread
+#   B  intrinsic  avx512_f32, the port of rvv_f32_m2, 1 thread
+#   C  omp        scalar_omp_f32, auto-vectorization off, thread sweep
+#
+# The intrinsic row keeps cflags "-" exactly as the RISC-V intrinsic rows do,
+# so the code around the hand-written loop is compiled the same way on both.
+# Unlike the RISC-V omp rows, the omp rows here also disable the vectorizer,
+# so cell C is the cell A source plus OpenMP and nothing else.
+#
+# Threads are pinned one per physical core by run_bench.sh; 64 fits within
+# one socket of 86 cores.
+
+arm	kernel	dtype	build	cflags	threads
+baseline	scalar_f32	f32	native	-fno-tree-vectorize -fno-tree-slp-vectorize	1
+intrinsic	avx512_f32	f32	native	-	1
+omp	scalar_omp_f32	f32	native	-fopenmp -fno-tree-vectorize -fno-tree-slp-vectorize	1
+omp	scalar_omp_f32	f32	native	-fopenmp -fno-tree-vectorize -fno-tree-slp-vectorize	2
+omp	scalar_omp_f32	f32	native	-fopenmp -fno-tree-vectorize -fno-tree-slp-vectorize	4
+omp	scalar_omp_f32	f32	native	-fopenmp -fno-tree-vectorize -fno-tree-slp-vectorize	8
+omp	scalar_omp_f32	f32	native	-fopenmp -fno-tree-vectorize -fno-tree-slp-vectorize	16
+omp	scalar_omp_f32	f32	native	-fopenmp -fno-tree-vectorize -fno-tree-slp-vectorize	32
+omp	scalar_omp_f32	f32	native	-fopenmp -fno-tree-vectorize -fno-tree-slp-vectorize	64

@@ -60,6 +60,7 @@ const char *rvsp_csr_status_string(rvsp_csr_status_t status);
  *
  *   scalar    no vector instructions
  *   rvv       gather, FMA, scatter on every segment
+ *   avx512    the rvv kernel at LMUL=2 ported to AVX-512, x86 builds only
  */
 #define RVSP_SPGEMM_PARAMS                                                     \
   int32_t a_rows, int32_t a_cols, int32_t b_cols, const int32_t *a_row_ptr,    \
@@ -73,6 +74,7 @@ rvsp_status_t rvsp_spgemm_scalar_f32(RVSP_SPGEMM_PARAMS);
 rvsp_status_t rvsp_spgemm_rvv_f32_m1(RVSP_SPGEMM_PARAMS);
 rvsp_status_t rvsp_spgemm_rvv_f32_m2(RVSP_SPGEMM_PARAMS);
 rvsp_status_t rvsp_spgemm_rvv_f32_m4(RVSP_SPGEMM_PARAMS);
+rvsp_status_t rvsp_spgemm_avx512_f32(RVSP_SPGEMM_PARAMS);
 
 /* Phases, exposed separately for the descriptor API. */
 
@@ -107,6 +109,7 @@ void rvsp_spgemm_scalar_f32_numeric(RVSP_NUMERIC_PARAMS);
 void rvsp_spgemm_rvv_f32_m1_numeric(RVSP_NUMERIC_PARAMS);
 void rvsp_spgemm_rvv_f32_m2_numeric(RVSP_NUMERIC_PARAMS);
 void rvsp_spgemm_rvv_f32_m4_numeric(RVSP_NUMERIC_PARAMS);
+void rvsp_spgemm_avx512_f32_numeric(RVSP_NUMERIC_PARAMS);
 
 #if defined(_OPENMP)
 /* Row loop parallelised with OpenMP. acc is nthreads consecutive
