@@ -50,7 +50,7 @@ by arm:
 | arm | check | fails when |
 | --- | --- | --- |
 | baseline, omp | scalar | the kernel has any vector instruction: any RVV `v*` on RISC-V; ymm, zmm, mask registers or packed xmm arithmetic on x86 |
-| intrinsic | vector | the kernel lacks the gather, FMA and scatter (`vluxei32` `vfmacc` `vsuxei32`, or `vgatherdps` `vfmadd` `vscatterdps`) |
+| intrinsic | vector | the kernel lacks the gather, FMA and scatter (`vluxei32`, `vfmacc` or `vfmadd`, `vsuxei32`; or `vgatherdps` `vfmadd` `vscatterdps`) |
 | autovec | report | never; lists what the compiler vectorized |
 
 On RISC-V a scalar check also refuses to pass if `OBJDUMP` cannot decode an

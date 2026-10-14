@@ -508,7 +508,7 @@ PROBE
         # The disassembly checks are only as good as the disassembler: one
         # that cannot decode RVV would show vector code as unknown words.
         if "$OBJDUMP" -d --no-show-raw-insn "$tmpd/probe" 2>/dev/null |
-            grep -q 'vfmacc\.vf'; then
+            grep -qE 'vfma(cc|dd)\.vf'; then
             echo "   OBJDUMP=$OBJDUMP decodes RVV"
         else
             rm -rf "$tmpd"
@@ -1206,7 +1206,7 @@ check_variant_disasm() {
                 ;;
             intrinsic)
                 bash bench/common/check_disasm.sh riscv vector "$bin" "$prefix" \
-                    vluxei32 vsuxei32 vfmacc
+                    vluxei32 vsuxei32 vfma
                 rc=$?
                 ;;
             autovec)

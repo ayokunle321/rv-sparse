@@ -8,8 +8,12 @@
 #
 #   check_disasm.sh ISA vector BINARY PREFIX MNEMONIC...
 #       Fail unless the PREFIX functions contain every listed mnemonic (matched
-#       as a prefix, so vfmadd matches vfmadd231ps). Use it to prove a vector
-#       kernel really gathers, FMAs and scatters.
+#       as a prefix, so vfmadd matches vfmadd231ps). A MNEMONIC may list
+#       alternatives separated by |, any one of which satisfies it: the same
+#       fused multiply-add is vfmacc.vf or vfmadd.vf depending on which operand
+#       the compiler's register allocation overwrites, so vfmacc|vfmadd
+#       accepts either. Use it to prove a vector kernel really gathers, FMAs
+#       and scatters.
 #
 #   check_disasm.sh ISA report BINARY PREFIX
 #       List the vector instructions in the PREFIX functions and never fail.
@@ -139,7 +143,11 @@ case "$MODE" in
         missing=()
 
         for m in "$@"; do
-            awk -F'\t' -v m="$m" 'index($2, m) == 1 { found = 1 } END { exit !found }' <<< "$insns" ||
+            awk -F'\t' -v m="$m" '
+                BEGIN { n = split(m, alt, "|") }
+                { for (i = 1; i <= n; i++) if (alt[i] != "" && index($2, alt[i]) == 1) found = 1 }
+                END { exit !found }
+            ' <<< "$insns" ||
                 missing+=("$m")
         done
 
